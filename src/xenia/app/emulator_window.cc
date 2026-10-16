@@ -8048,6 +8048,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               ImGui::EndCombo();
             }
           }
+        }
 
         if (settings_selected_section == 7) {
           auto bool_toggle = [&](const char* label, const char* true_label,
