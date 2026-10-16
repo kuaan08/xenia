@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - 'xenia-canary-uwp/**'
-      - 'src/xenia/app/emulator_window.cc'
+      - 'src/xenia/**'
       - 'src/xenia/emulator.cc'
       - 'src/xenia/vfs/devices/**'
       - 'CMakeLists.txt'
