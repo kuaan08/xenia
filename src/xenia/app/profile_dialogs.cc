@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 #include "xenia/app/profile_dialogs.h"
+#include "xenia/app/frontend_text.h"
 #include <ctime>
 #include <filesystem>
 
@@ -62,9 +63,9 @@ void NoProfileDialog::OnDraw(ImGuiIO& io) {
     return;
   }
 
-  const std::string message =
+  const std::string message = FrontendText(
       "There is no profile available! You will not be able to save\n"
-      "without one.\n\nWould you like to create one?";
+      "without one.\n\nWould you like to create one?");
 
   const auto content_files = xe::filesystem::ListDirectories(
       emulator_window_->emulator()->content_root());
@@ -134,7 +135,7 @@ void NoProfileDialog::OnDraw(ImGuiIO& io) {
   const xe::app::OverlayHeaderLayout header_layout =
       xe::app::DrawOverlayHeader(root_draw_list, overlay_min, panel_size,
                                  panel_padding, ux, uy,
-                                 "No Profiles Found");
+                                 FrontendText("No Profiles Found"));
 
   const float content_start_y =
       header_layout.position.y + header_layout.font_size + 55.0f;
@@ -148,7 +149,8 @@ void NoProfileDialog::OnDraw(ImGuiIO& io) {
 
   const ImVec2 button_size(field_width, 0.0f);
   const char* create_label =
-      content_files.empty() ? "Create Profile" : "Create profile & migrate data";
+      FrontendText(content_files.empty() ? "Create Profile"
+                                        : "Create profile & migrate data");
   if (focus_requested_) {
     ImGui::SetKeyboardFocusHere();
     focus_requested_ = false;
@@ -163,13 +165,13 @@ void NoProfileDialog::OnDraw(ImGuiIO& io) {
   ImGui::Spacing();
   ImGui::SetCursorScreenPos(
       ImVec2(overlay_min.x + panel_padding.x, ImGui::GetCursorScreenPos().y));
-  if (DrawTextEffectButton("Open profile menu", button_size)) {
+  if (DrawTextEffectButton(FrontendText("Open profile menu"), button_size)) {
     should_open_profile_menu = true;
   }
   ImGui::Spacing();
   ImGui::SetCursorScreenPos(
       ImVec2(overlay_min.x + panel_padding.x, ImGui::GetCursorScreenPos().y));
-  if (DrawTextEffectButton("Close", button_size)) {
+  if (DrawTextEffectButton(FrontendText("Close"), button_size)) {
     should_close = true;
   }
   ImGui::EndDisabled();
@@ -370,7 +372,8 @@ void ProfileConfigDialog::OnDraw(ImGuiIO& io) {
 
   const xe::app::OverlayHeaderLayout header_layout =
       xe::app::DrawOverlayHeader(root_draw_list, overlay_min, panel_size,
-                                 panel_padding, ux, uy, "Profiles Menu");
+                                 panel_padding, ux, uy,
+                                 FrontendText("Profiles Menu"));
 
   const float content_start_y =
       header_layout.position.y + header_layout.font_size + 65.0f;
@@ -483,7 +486,7 @@ void ProfileConfigDialog::OnDraw(ImGuiIO& io) {
           ImGui::TextUnformatted(
               fmt::format("Assigned to slot: {}", user_index + 1).c_str());
         } else {
-          ImGui::TextUnformatted("Profile is not signed in");
+          ImGui::TextUnformatted(FrontendText("Profile is not signed in"));
         }
       }
       ImGui::EndGroup();
@@ -512,7 +515,7 @@ void ProfileConfigDialog::OnDraw(ImGuiIO& io) {
       const bool is_signedin =
           profile_manager->GetProfile(selected_xuid_) != nullptr;
       if (selected_user_index == XUserIndexAny) {
-        if (ImGui::MenuItem("Login")) {
+        if (ImGui::MenuItem(FrontendText("Login"))) {
           XELOGD("ProfileConfigDialog: selected Login for {:016X}",
                  selected_xuid_);
           profile_manager->Login(selected_xuid_);
@@ -522,7 +525,7 @@ void ProfileConfigDialog::OnDraw(ImGuiIO& io) {
             LoadProfileIcon(selected_xuid_);
           }
         }
-        if (ImGui::BeginMenu("Login to slot:")) {
+        if (ImGui::BeginMenu(FrontendText("Login to slot:"))) {
           for (uint8_t i = 1; i <= XUserMaxUserCount; i++) {
             if (ImGui::MenuItem(fmt::format("slot {}", i).c_str())) {
               XELOGD(
@@ -535,7 +538,7 @@ void ProfileConfigDialog::OnDraw(ImGuiIO& io) {
           ImGui::EndMenu();
         }
       } else {
-        if (ImGui::MenuItem("Logout")) {
+        if (ImGui::MenuItem(FrontendText("Logout"))) {
           XELOGD("ProfileConfigDialog: selected Logout for {:016X}",
                  selected_xuid_);
           profile_manager->Logout(selected_user_index);
@@ -543,7 +546,7 @@ void ProfileConfigDialog::OnDraw(ImGuiIO& io) {
         }
       }
 
-      if (ImGui::MenuItem("Modify")) {
+      if (ImGui::MenuItem(FrontendText("Modify"))) {
         XELOGD("ProfileConfigDialog: selected Modify for {:016X}",
                selected_xuid_);
         new kernel::xam::ui::GamercardUI(
@@ -552,7 +555,7 @@ void ProfileConfigDialog::OnDraw(ImGuiIO& io) {
       }
 
       ImGui::BeginDisabled(!is_signedin);
-      if (ImGui::MenuItem("Show Played Titles")) {
+      if (ImGui::MenuItem(FrontendText("Show Played Titles"))) {
         XELOGD("ProfileConfigDialog: selected Show Played Titles for {:016X}",
                selected_xuid_);
         // The UWP frontend and pause menu are persistent dialogs.
@@ -571,7 +574,7 @@ void ProfileConfigDialog::OnDraw(ImGuiIO& io) {
 
       if (!emulator_window_->emulator()->is_title_open()) {
         ImGui::Separator();
-        if (ImGui::BeginMenu("Delete Profile")) {
+        if (ImGui::BeginMenu(FrontendText("Delete Profile"))) {
           ImGui::BeginTooltip();
           ImGui::TextUnformatted(
               fmt::format(
@@ -582,7 +585,7 @@ void ProfileConfigDialog::OnDraw(ImGuiIO& io) {
                   .c_str());
           ImGui::EndTooltip();
 
-          if (ImGui::MenuItem("Yes, delete it!")) {
+          if (ImGui::MenuItem(FrontendText("Yes, delete it!"))) {
             XELOGD("ProfileConfigDialog: confirmed Delete Profile for {:016X}",
                    selected_xuid_);
             profile_manager->DeleteProfile(selected_xuid_);
@@ -595,13 +598,23 @@ void ProfileConfigDialog::OnDraw(ImGuiIO& io) {
     ImGui::EndPopup();
   }
   
+  // B = back when this dialog is topmost; a nested profile-creation
+  // dialog handles its own B input.
+  if (imgui_drawer()->GetDialogCount() <= 3 &&
+      !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) &&
+      ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
+    ImGui::End();
+    Close();
+    return;
+  }
+
   // Add spacing before buttons
   ImGui::Dummy(ImVec2(0.0f, 24.0f * uy));
   
   // Create Profile button
   const ImVec2 button_size(field_width, 0.0f);
   ImGui::SetCursorScreenPos(ImVec2(shifted_x, ImGui::GetCursorScreenPos().y));
-  if (DrawTextEffectButton("Create Profile", button_size)) {
+  if (DrawTextEffectButton(FrontendText("Create Profile"), button_size)) {
     XELOGD("ProfileConfigDialog: Create Profile button activated");
     new kernel::xam::ui::CreateProfileUI(emulator_window_->imgui_drawer(),
                                          emulator_window_->emulator());
@@ -612,7 +625,7 @@ void ProfileConfigDialog::OnDraw(ImGuiIO& io) {
   // Close button
   ImGui::Dummy(ImVec2(0.0f, 4.0f * uy));
   ImGui::SetCursorScreenPos(ImVec2(shifted_x, ImGui::GetCursorScreenPos().y));
-  if (DrawTextEffectButton("Close", button_size)) {
+  if (DrawTextEffectButton(FrontendText("Close"), button_size)) {
     XELOGD("ProfileConfigDialog: Close button activated");
     Close();
     return;
@@ -631,11 +644,11 @@ void ProfileConfigDialog::OnDraw(ImGuiIO& io) {
   const float footer_select_icon_offset = 42.0f * ux;
   
   xe::app::DrawFooterPrompt(root_draw_list, GetOrCreateButtonTexture('B'),
-                            footer_text_size, footer_icon_size, "Back",
+                            footer_text_size, footer_icon_size, FrontendText("Back"),
                             footer_back_y, footer_back_text_x,
                             footer_back_icon_offset);
   xe::app::DrawFooterPrompt(root_draw_list, GetOrCreateButtonTexture('A'),
-                            footer_text_size, footer_icon_size, "Select",
+                            footer_text_size, footer_icon_size, FrontendText("Select"),
                             footer_select_y, footer_select_text_x,
                             footer_select_icon_offset);
   
