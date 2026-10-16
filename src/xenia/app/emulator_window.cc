@@ -1,0 +1,9494 @@
+/**
+ ******************************************************************************
+ * Xenia : Xbox 360 Emulator Research Project                                 *
+ ******************************************************************************
+ * Copyright 2022 Ben Vanik. All rights reserved.                             *
+ * Released under the BSD license - see LICENSE in the root for more details. *
+ ******************************************************************************
+ */
+
+#include "xenia/app/emulator_window.h"
+
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <iterator>
+#include <cstring>
+#include <ctime>
+#include <limits>
+#include <memory>
+#include <mutex>
+#include <set>
+#include <string>
+#include <utility>
+
+#include "third_party/fmt/include/fmt/format.h"
+#include "third_party/imgui/imgui.h"
+#include "third_party/stb/stb_image.h"
+#include "third_party/stb/stb_image_write.h"
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wabsolute-value"
+#endif
+#include "third_party/tomlplusplus/toml.hpp"
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+
+#include "xenia/app/console_settings_dialog.h"
+#include "xenia/app/content_list_dialog.h"
+#include "xenia/app/profile_dialogs.h"
+#include "xenia/app/ui_text_effect_helpers.h"
+#include "xenia/base/assert.h"
+#include "xenia/base/filesystem.h"
+#include "xenia/base/clock.h"
+#include "xenia/base/cvar.h"
+#include "xenia/base/debugging.h"
+#include "xenia/base/toast_notification.h"
+#include "xenia/base/logging.h"
+#include "xenia/base/platform.h"
+#include "xenia/base/profiling.h"
+#include "xenia/base/system.h"
+#include "xenia/base/string_util.h"
+#include "xenia/base/threading.h"
+#include "xenia/cpu/processor.h"
+#include "xenia/emulator.h"
+#include "xenia/gpu/command_processor.h"
+#include "xenia/gpu/d3d12/d3d12_command_processor.h"
+#include "xenia/gpu/graphics_system.h"
+#include "xenia/hid/input_system.h"
+#include "xenia/kernel/xam/ui/create_profile_ui.h"
+#include "xenia/kernel/xam/xam_module.h"
+#include "xenia/kernel/xam/xam_state.h"
+#include "xenia/kernel/xconfig.h"
+#include "xenia/ui/file_picker.h"
+#include "xenia/ui/graphics_provider.h"
+#include "xenia/ui/imgui_dialog.h"
+#include "xenia/ui/imgui_drawer.h"
+#include "xenia/ui/imgui_host_notification.h"
+#include "xenia/ui/immediate_drawer.h"
+#include "xenia/ui/presenter.h"
+#include "xenia/ui/ui_event.h"
+#include "xenia/ui/virtual_key.h"
+
+#if XE_PLATFORM_WINRT
+#include "xenia-canary-uwp/UWPUtil.h"
+#include "xenia-canary-uwp/WinRTKeyboard.h"
+#include "xenia-canary-uwp/XeniaUWP.h"
+#endif
+
+#include "xenia/base/cvar.h"
+#include "xenia/config.h"
+#include "xenia/ui/d3d12/d3d12_immediate_drawer.h"
+#include "version.h"
+
+DECLARE_bool(debug);
+
+DECLARE_string(hid);
+
+DECLARE_bool(guide_button);
+
+DECLARE_bool(clear_memory_page_state);
+
+DECLARE_string(readback_resolve);
+
+DECLARE_int32(user_language);
+
+DECLARE_bool(readback_memexport);
+
+DEFINE_bool(fullscreen, false, "Whether to launch the emulator in fullscreen.",
+            "Display");
+
+DEFINE_bool(controller_hotkeys, false,
+        "Hotkeys for Xbox and PS controllers.", "General");
+
+// Never actually registered despite the Settings UI (section 0's Language
+// combo, and the per-game config editor's enum handling for it) always
+// having assumed it exists - cvar::ConfigVars->find("user_language") was
+// landing on end() and getting dereferenced unconditionally, an immediate
+// crash on literally every visit to the Settings tab (it always resets to
+// section 0 on open). Values match kernel::XLanguage (1=English, 2=Japanese,
+// ... 12=Russian, per the kLanguageOptions/enum_values lists already in this
+// file).
+DEFINE_int32(user_language, 1, "Guest system language (1=English, 2=Japanese, 3=German, 4=French, 5=Spanish, 6=Italian, 7=Korean, 8=Traditional Chinese, 9=Portuguese, 10=Simplified Chinese, 11=Polish, 12=Russian).",
+            "General");
+
+DECLARE_bool(skip_frontend);
+
+DEFINE_bool(skip_frontend, false,
+            "Skip the UWP frontend and launch with a file-picker.", "General");
+
+DEFINE_bool(ui_prefer_short_descriptions, true,
+            "Prefer short metadata descriptions on the Games tab (falls back to the long description if needed).",
+            "UI");
+DEFINE_bool(ui_prefer_banner_hero_art, true,
+            "Prefer banner artwork above the description on the Games tab (falls back to gallery artwork).",
+            "UI");
+DEFINE_bool(ui_prefer_icon_gamelist_art, true,
+            "Prefer icon art in the Games tab list (falls back to box art).",
+            "UI");
+DEFINE_bool(ui_show_genre_metadata, true,
+            "Show genre metadata on the Games tab.", "UI");
+DEFINE_bool(ui_show_developer_metadata, true,
+            "Show developer metadata on the Games tab.", "UI");
+DEFINE_bool(ui_show_title_metadata, true,
+            "Show the selected game's title in the metadata panel on the Games tab.",
+            "UI");
+DEFINE_bool(ui_show_title_id_metadata, true,
+            "Show Title IDs in the Games tab details panel.", "UI");
+DEFINE_bool(ui_show_release_date_metadata, true,
+            "Show release dates on the Games tab.", "UI");
+DEFINE_bool(ui_show_user_rating_metadata, true,
+            "Show user ratings on the Games tab.", "UI");
+
+DEFINE_string(ui_interface_overlay_image, "blades.png",
+              "Interface overlay image to display in the frontend. Must be a PNG file in Assets/interface_overlays/.",
+              "UI");
+
+DEFINE_string(ui_background_image, "xenia.png",
+              "Background image to display in the frontend when no overlay is present. Must be a PNG file in Assets/backgrounds/.",
+              "UI");
+
+DEFINE_string(ui_custom_background_path, "",
+              "Absolute path to a user-picked custom background image. "
+              "Takes priority over Background Image when set; leave empty "
+              "to use the preset picker instead.",
+              "UI");
+
+DEFINE_bool(ui_enable_dynamic_game_backgrounds, true,
+            "Enable dynamic game-specific background artwork in the frontend.",
+            "UI");
+
+DEFINE_bool(ui_hide_tabs_text, false,
+            "Hide the text labels for tabs (games, settings, paths, about) in the frontend.",
+            "UI");
+
+DEFINE_string(ui_guide_image, "blades.png",
+              "Guide panel image to display in the search overlay. Must be a PNG file in Assets/guide_images/.",
+              "UI");
+
+DEFINE_string(ui_text_effect, "stroke_fill",
+              "Text effect to apply globally to all UI text. Options: shadow, lift, stroke_fill, glow, outline, double_shadow, bold, none.",
+              "UI");
+
+DEFINE_string(ui_text_color, "white",
+              "Monochrome text color override for UI text. Options: white, black.",
+              "UI");
+
+DEFINE_string(ui_border_color, "green",
+              "Accent color applied to UI borders, checkboxes, combo accents, and frontend headers. Options: green, purple, red, orange, blue, yellow, grey, black, white.",
+              "UI");
+
+DEFINE_double(ui_text_brightness, 1.0,
+                "Brightness multiplier applied to UI text.", "UI");
+
+DEFINE_double(ui_text_contrast, 1.0,
+                "Contrast multiplier applied to UI text.", "UI");
+
+DEFINE_string(
+    postprocess_antialiasing, "",
+    "Post-processing anti-aliasing effect to apply to the image output of the "
+    "game.\n"
+    "Using post-process anti-aliasing is heavily recommended when AMD "
+    "FidelityFX Contrast Adaptive Sharpening or Super Resolution 1.0 is "
+    "active.\n"
+    "Use: [none, fxaa, fxaa_extreme]\n"
+    " none (or any value not listed here):\n"
+    "  Don't alter the original image.\n"
+    " fxaa:\n"
+    "  NVIDIA Fast Approximate Anti-Aliasing 3.11, normal quality preset (12).\n"
+    " fxaa_extreme:\n"
+    "  NVIDIA Fast Approximate Anti-Aliasing 3.11, extreme quality preset "
+    "(39).",
+    "Display");
+DEFINE_string(
+    postprocess_scaling_and_sharpening, "",
+    "Post-processing effect to use for resampling and/or sharpening of the "
+    "final display output.\n"
+    "Use: [bilinear, cas, fsr]\n"
+    " bilinear (or any value not listed here):\n"
+    "  Original image at 1:1, simple bilinear stretching for resampling.\n"
+    " cas:\n"
+    "  Use AMD FidelityFX Contrast Adaptive Sharpening (CAS) for sharpening "
+    "at scaling factors of up to 2x2, with additional bilinear stretching for "
+    "larger factors.\n"
+    " fsr:\n"
+    "  Use AMD FidelityFX Super Resolution 1.0 (FSR) for highest-quality "
+    "upscaling, or AMD FidelityFX Contrast Adaptive Sharpening for sharpening "
+    "while not scaling or downsampling.\n"
+    "  For scaling by factors of more than 2x2, multiple FSR passes are done.",
+    "Display");
+DEFINE_double(
+    postprocess_ffx_cas_additional_sharpness,
+    xe::ui::Presenter::GuestOutputPaintConfig::kCasAdditionalSharpnessDefault,
+    "Additional sharpness for AMD FidelityFX Contrast Adaptive Sharpening "
+    "(CAS), from 0 to 1.\n"
+    "Higher is sharper.",
+    "Display");
+DEFINE_uint32(
+    postprocess_ffx_fsr_max_upsampling_passes,
+    xe::ui::Presenter::GuestOutputPaintConfig::kFsrMaxUpscalingPassesMax,
+    "Maximum number of upsampling passes performed in AMD FidelityFX Super "
+    "Resolution 1.0 (FSR) before falling back to bilinear stretching after the "
+    "final pass.\n"
+    "Each pass upscales only to up to 2x2 the previous size. If the game "
+    "outputs a 1280x720 image, 1 pass will upscale it to up to 2560x1440 "
+    "(below 4K), after 2 passes it will be upscaled to a maximum of 5120x2880 "
+    "(including 3840x2160 for 4K), and so on.\n"
+    "This variable has no effect if the display resolution isn't very high, "
+    "but may be reduced on resolutions like 4K or 8K in case the performance "
+    "impact of multiple FSR upsampling passes is too high, or if softer edges "
+    "are desired.\n"
+    "The default value is the maximum internally supported by Xenia.",
+    "Display");
+DEFINE_double(
+    postprocess_ffx_fsr_sharpness_reduction,
+    xe::ui::Presenter::GuestOutputPaintConfig::kFsrSharpnessReductionDefault,
+    "Sharpness reduction for AMD FidelityFX Super Resolution 1.0 (FSR), in "
+    "stops.\n"
+    "Lower is sharper.",
+    "Display");
+// Dithering to 8bpc is enabled by default since the effect is minor, only
+// effects what can't be shown normally by host displays, and nothing is changed
+// by it for 8bpc source without resampling.
+DEFINE_bool(
+    postprocess_dither, true,
+    "Dither the final image output from the internal precision to 8 bits per "
+    "channel so gradients are smoother.\n"
+    "On a 10bpc display, the lower 2 bits will still be kept, but noise will "
+    "be added to them - disabling may be recommended for 10bpc, but it "
+    "depends on the 10bpc displaying capabilities of the actual display used.",
+    "Display");
+
+DEFINE_int32(recent_titles_entry_amount, 10,
+             "Allows user to define how many titles is saved in list of "
+             "recently played titles.",
+             "General");
+
+namespace xe {
+namespace app {
+
+using xe::ui::FileDropEvent;
+using xe::ui::KeyEvent;
+#if !XE_PLATFORM_WINRT
+using xe::ui::MenuItem;
+#endif
+using xe::ui::UIEvent;
+
+using namespace xe::hid;
+using namespace xe::gpu;
+
+const std::string kRecentlyPlayedTitlesFilename = "recent.toml";
+const std::string kBaseTitle = "Xenia-canary";
+
+// cvar::ConfigVars->find(name)->second, used throughout the settings UI
+// below, is undefined behavior if the cvar isn't registered - find()
+// returns end() rather than throwing. Returns nullptr instead in that case.
+template <typename T>
+static cvar::ConfigVar<T>* FindConfigVar(const char* name) {
+  auto it = cvar::ConfigVars->find(name);
+  return it != cvar::ConfigVars->end()
+             ? dynamic_cast<cvar::ConfigVar<T>*>(it->second)
+             : nullptr;
+}
+
+namespace {
+std::shared_ptr<ui::ImmediateTexture> LoadTextureFromFile(
+    ui::ImGuiDrawer* imgui_drawer, const std::string& asset_path,
+    bool transparent = false) {
+  if (!imgui_drawer || asset_path.empty() ||
+      !std::filesystem::exists(asset_path)) {
+    return nullptr;
+  }
+
+  auto* drawer = imgui_drawer->GetImmediateDrawer();
+  if (!drawer) {
+    return nullptr;
+  }
+
+  int width = 0;
+  int height = 0;
+  int comp = 0;
+  auto data = stbi_load(asset_path.c_str(), &width, &height, &comp, 4);
+  if (!data || width <= 0 || height <= 0) {
+    if (data) {
+      stbi_image_free(data);
+    }
+    return nullptr;
+  }
+
+  auto tex = drawer->CreateTexture(static_cast<uint32_t>(width),
+                                    static_cast<uint32_t>(height),
+                                    xe::ui::ImmediateTextureFilter::kLinear,
+                                    transparent, data);
+  stbi_image_free(data);
+  if (!tex) {
+    return nullptr;
+  }
+  return std::shared_ptr<ui::ImmediateTexture>(tex.release());
+}
+
+}  // namespace
+
+EmulatorWindow::EmulatorWindow(Emulator* emulator,
+                               ui::WindowedAppContext& app_context,
+                               uint32_t width, uint32_t height)
+    : emulator_(emulator),
+      app_context_(app_context),
+      window_listener_(*this),
+      window_(ui::Window::Create(app_context, kBaseTitle, width, height)),
+      imgui_drawer_(
+          std::make_unique<ui::ImGuiDrawer>(window_.get(), kZOrderImGui)),
+      display_config_game_config_load_callback_(
+          new DisplayConfigGameConfigLoadCallback(*emulator, *this)) {
+  base_title_ = kBaseTitle +
+#ifdef DEBUG
+#if _NO_DEBUG_HEAP == 1
+                " DEBUG"
+#else
+                " CHECKED"
+#endif
+#endif
+                " ("
+#ifdef XE_BUILD_IS_PR
+                "PR#" XE_BUILD_PR_NUMBER " " XE_BUILD_PR_REPO
+                " " XE_BUILD_PR_BRANCH "@" XE_BUILD_PR_COMMIT_SHORT " against "
+#endif
+                XE_BUILD_BRANCH "@" XE_BUILD_COMMIT_SHORT " on " XE_BUILD_DATE
+                ")";
+
+  LoadRecentlyLaunchedTitles();
+
+#if XE_PLATFORM_WINRT
+  if (cvars::skip_frontend) {
+    UWP::SelectGameFromWinRT(emulator_);
+  } else {
+    gamelist_ = std::unique_ptr<WinRTFrontendDialog>(
+        new WinRTFrontendDialog(imgui_drawer_.get(), *this));
+  }
+#endif  // XE_PLATFORM_WINRT
+
+  // Registered after gamelist_ above (was briefly registered before it,
+  // which changed the pre-existing dialog draw order for the first time
+  // ever - restored the original order out of caution given a reported
+  // crash on frontend startup with no diagnostic logged before it).
+  pause_menu_dialog_ = std::unique_ptr<PauseMenuDialog>(
+      new PauseMenuDialog(imgui_drawer_.get(), *this));
+}
+
+std::unique_ptr<EmulatorWindow> EmulatorWindow::Create(
+    Emulator* emulator, ui::WindowedAppContext& app_context, uint32_t width,
+    uint32_t height) {
+  assert_true(app_context.IsInUIThread());
+  std::unique_ptr<EmulatorWindow> emulator_window(
+      new EmulatorWindow(emulator, app_context, width, height));
+  if (!emulator_window->Initialize()) {
+    return nullptr;
+  }
+  return emulator_window;
+}
+
+EmulatorWindow::~EmulatorWindow() {
+  // Notify the ImGui drawer that the immediate drawer is being destroyed.
+  ShutdownGraphicsSystemPresenterPainting();
+}
+
+ui::Presenter* EmulatorWindow::GetGraphicsSystemPresenter() const {
+  gpu::GraphicsSystem* graphics_system = emulator_->graphics_system();
+  return graphics_system ? graphics_system->presenter() : nullptr;
+}
+
+void EmulatorWindow::SetupGraphicsSystemPresenterPainting() {
+  ShutdownGraphicsSystemPresenterPainting();
+
+  if (!window_) {
+    return;
+  }
+
+  ui::Presenter* presenter = GetGraphicsSystemPresenter();
+  if (!presenter) {
+    return;
+  }
+
+  ApplyDisplayConfigForCvars();
+
+  window_->SetPresenter(presenter);
+
+  immediate_drawer_ =
+      emulator_->graphics_system()->provider()->CreateImmediateDrawer();
+  if (immediate_drawer_) {
+    immediate_drawer_->SetPresenter(presenter);
+    imgui_drawer_->SetPresenterAndImmediateDrawer(presenter,
+                                                  immediate_drawer_.get());
+    Profiler::SetUserIO(kZOrderProfiler, window_.get(), presenter,
+                        immediate_drawer_.get());
+  }
+}
+
+void EmulatorWindow::ShutdownGraphicsSystemPresenterPainting() {
+  Profiler::SetUserIO(kZOrderProfiler, window_.get(), nullptr, nullptr);
+  imgui_drawer_->SetPresenterAndImmediateDrawer(nullptr, nullptr);
+  immediate_drawer_.reset();
+  if (window_) {
+    window_->SetPresenter(nullptr);
+  }
+}
+
+void EmulatorWindow::OnEmulatorInitialized() {
+  emulator_initialized_ = true;
+  window_->SetMainMenuEnabled(true);
+  // When the user can see that the emulator isn't initializing anymore (the
+  // menu isn't disabled), enter fullscreen if requested.
+  if (cvars::fullscreen) {
+    SetFullscreen(true);
+  }
+
+  if (IsUseNexusForGameBarEnabled()) {
+    XELOGE(
+        "Xbox Gamebar Enabled, using BACK button instead of GUIDE for "
+        "controller hotkeys!!!");
+  }
+
+  // Create a thread to listen for controller hotkeys.
+  Gamepad_HotKeys_Listener =
+      threading::Thread::Create({}, [&] { GamepadHotKeys(); });
+  Gamepad_HotKeys_Listener->set_name("Gamepad HotKeys Listener");
+}
+
+void EmulatorWindow::EmulatorWindowListener::OnClosing(ui::UIEvent& e) {
+  emulator_window_.app_context_.QuitFromUIThread();
+}
+
+void EmulatorWindow::EmulatorWindowListener::OnFileDrop(ui::FileDropEvent& e) {
+  emulator_window_.FileDrop(e.filename());
+}
+
+void EmulatorWindow::EmulatorWindowListener::OnKeyDown(ui::KeyEvent& e) {
+  emulator_window_.OnKeyDown(e);
+}
+
+void EmulatorWindow::EmulatorWindowListener::OnMouseDown(ui::MouseEvent& e) {
+  emulator_window_.OnMouseDown(e);
+}
+
+void EmulatorWindow::EmulatorWindowListener::OnMouseUp(ui::MouseEvent& e) {
+  emulator_window_.OnMouseUp(e);
+}
+
+void EmulatorWindow::EmulatorWindowListener::OnUsbDeviceChanged(
+    bool is_arrival) {
+  if (!emulator_window_.emulator()) {
+    return;
+  }
+
+  if (!emulator_window_.emulator()->input_system()) {
+    return;
+  }
+
+  auto* portal = emulator_window_.emulator()->input_system()->GetPortal();
+  if (!portal) {
+    return;
+  }
+
+  if (is_arrival) {
+    portal->OnDeviceArrival();
+  } else {
+    portal->OnDeviceRemoval();
+  }
+}
+
+void EmulatorWindow::DisplayConfigGameConfigLoadCallback::PostGameConfigLoad() {
+  emulator_window_.ApplyDisplayConfigForCvars();
+}
+
+void EmulatorWindow::DisplayConfigDialog::OnDraw(ImGuiIO& io) {
+  gpu::GraphicsSystem* graphics_system =
+      emulator_window_.emulator_->graphics_system();
+  if (!graphics_system) {
+    return;
+  }
+
+  // In the top-left corner so it's close to the menu bar from where it was
+  // opened.
+  // Origin Y coordinate 20 was taken from the Dear ImGui demo.
+  ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(20, 20), ImGuiCond_FirstUseEver);
+  // Alpha from Dear ImGui tooltips (0.35 from the overlay provides too low
+  // visibility). Translucent so some effect of the changes can still be seen
+  // through it.
+  ImGui::SetNextWindowBgAlpha(0.6f);
+  bool dialog_open = true;
+  if (!ImGui::Begin("Post-processing", &dialog_open,
+                    ImGuiWindowFlags_NoCollapse |
+                        ImGuiWindowFlags_AlwaysAutoResize |
+                        ImGuiWindowFlags_HorizontalScrollbar)) {
+    ImGui::End();
+    Close();
+    return;
+  }
+  // Even if the close button has been pressed, still paint everything not to
+  // have one frame with an empty window.
+
+  // Prevent user confusion which has been reported multiple times.
+  ImGui::TextUnformatted("All effects can be used on GPUs of any brand.");
+  ImGui::Spacing();
+
+  gpu::CommandProcessor* command_processor =
+      graphics_system->command_processor();
+  if (command_processor) {
+    if (ImGui::TreeNodeEx(
+            "Anti-aliasing",
+            ImGuiTreeNodeFlags_Framed | ImGuiTreeNodeFlags_DefaultOpen)) {
+      gpu::CommandProcessor::SwapPostEffect current_swap_post_effect =
+          command_processor->GetDesiredSwapPostEffect();
+      int new_swap_post_effect_index = int(current_swap_post_effect);
+      ImGui::RadioButton("None", &new_swap_post_effect_index,
+                         int(gpu::CommandProcessor::SwapPostEffect::kNone));
+      ImGui::RadioButton(
+          "NVIDIA Fast Approximate Anti-Aliasing 3.11 (FXAA), normal quality",
+          &new_swap_post_effect_index,
+          int(gpu::CommandProcessor::SwapPostEffect::kFxaa));
+      ImGui::RadioButton(
+          "NVIDIA Fast Approximate Anti-Aliasing 3.11 (FXAA), extreme quality",
+          &new_swap_post_effect_index,
+          int(gpu::CommandProcessor::SwapPostEffect::kFxaaExtreme));
+      gpu::CommandProcessor::SwapPostEffect new_swap_post_effect =
+          gpu::CommandProcessor::SwapPostEffect(new_swap_post_effect_index);
+      if (current_swap_post_effect != new_swap_post_effect) {
+        command_processor->SetDesiredSwapPostEffect(new_swap_post_effect);
+      }
+
+      // Override the values in the cvars to save them to the config at exit if
+      // the user has set them to anything new.
+      if (GetSwapPostEffectForCvarValue(cvars::postprocess_antialiasing) !=
+          new_swap_post_effect) {
+        OVERRIDE_string(postprocess_antialiasing,
+                        GetCvarValueForSwapPostEffect(new_swap_post_effect));
+      }
+
+      ImGui::TreePop();
+    }
+  }
+
+  ui::Presenter* presenter = graphics_system->presenter();
+  if (presenter) {
+    const ui::Presenter::GuestOutputPaintConfig& current_presenter_config =
+        presenter->GetGuestOutputPaintConfigFromUIThread();
+    ui::Presenter::GuestOutputPaintConfig new_presenter_config =
+        current_presenter_config;
+
+    if (ImGui::TreeNodeEx(
+            "Resampling and sharpening",
+            ImGuiTreeNodeFlags_Framed | ImGuiTreeNodeFlags_DefaultOpen)) {
+      // Filtering effect.
+      int new_effect_index = int(new_presenter_config.GetEffect());
+      ImGui::RadioButton(
+          "None / bilinear", &new_effect_index,
+          int(ui::Presenter::GuestOutputPaintConfig::Effect::kBilinear));
+      ImGui::RadioButton(
+          "AMD FidelityFX Contrast Adaptive Sharpening (CAS)",
+          &new_effect_index,
+          int(ui::Presenter::GuestOutputPaintConfig::Effect::kCas));
+      ImGui::RadioButton(
+          "AMD FidelityFX Super Resolution 1.0 (FSR)", &new_effect_index,
+          int(ui::Presenter::GuestOutputPaintConfig::Effect::kFsr));
+      new_presenter_config.SetEffect(
+          ui::Presenter::GuestOutputPaintConfig::Effect(new_effect_index));
+
+      // effect_description must be one complete, but short enough, sentence per
+      // line, as TextWrapped doesn't work correctly in auto-resizing windows
+      // (in the initial frames, the window becomes extremely tall, and widgets
+      // added after the wrapped text have no effect on the width of the text).
+      const char* effect_description = nullptr;
+      switch (new_presenter_config.GetEffect()) {
+        case ui::Presenter::GuestOutputPaintConfig::Effect::kBilinear:
+          effect_description =
+              "Simple bilinear filtering is done if resampling is needed.\n"
+              "Otherwise, only anti-aliasing is done if enabled, or displaying "
+              "as is.";
+          break;
+        case ui::Presenter::GuestOutputPaintConfig::Effect::kCas:
+          effect_description =
+              "Sharpening and resampling to up to 2x2 to improve the fidelity "
+              "of details.\n"
+              "For scaling by more than 2x2, bilinear stretching is done "
+              "afterwards.";
+          break;
+        case ui::Presenter::GuestOutputPaintConfig::Effect::kFsr:
+          effect_description =
+              "High-quality edge-preserving upscaling to arbitrary target "
+              "resolutions.\n"
+              "For scaling by more than 2x2, multiple upsampling passes are "
+              "done.\n"
+              "If not upscaling, Contrast Adaptive Sharpening (CAS) is used "
+              "instead.";
+          break;
+      }
+      if (effect_description) {
+        ImGui::TextUnformatted(effect_description);
+      }
+
+      if (new_presenter_config.GetEffect() ==
+              ui::Presenter::GuestOutputPaintConfig::Effect::kCas ||
+          new_presenter_config.GetEffect() ==
+              ui::Presenter::GuestOutputPaintConfig::Effect::kFsr) {
+        if (effect_description) {
+          ImGui::Spacing();
+        }
+
+        ImGui::TextUnformatted(
+            "FXAA is highly recommended when using CAS or FSR.");
+
+        ImGui::Spacing();
+
+        // 2 decimal places is more or less enough precision for the sharpness
+        // given the minor visual effect of small changes, the width of the
+        // slider, and readability convenience (2 decimal places is like an
+        // integer percentage). However, because Dear ImGui parses the string
+        // representation of the number and snaps the value to it internally,
+        // 2 decimal places actually offer less precision than the slider itself
+        // does. This is especially prominent in the low range of the non-linear
+        // FSR sharpness reduction slider. 3 decimal places are optimal in this
+        // case.
+
+        if (new_presenter_config.GetEffect() ==
+            ui::Presenter::GuestOutputPaintConfig::Effect::kFsr) {
+          float fsr_sharpness_reduction =
+              new_presenter_config.GetFsrSharpnessReduction();
+          ImGui::TextUnformatted(
+              "FSR sharpness reduction when upscaling (lower is sharper):");
+          const auto label =
+              fmt::format("{:.3f} stops", fsr_sharpness_reduction);
+          // Power 2.0 scaling as the reduction is in stops, used in exp2.
+          fsr_sharpness_reduction = sqrt(2.f * fsr_sharpness_reduction);
+          ImGui::SliderFloat(
+              "##FSRSharpnessReduction", &fsr_sharpness_reduction,
+              ui::Presenter::GuestOutputPaintConfig::kFsrSharpnessReductionMin,
+              ui::Presenter::GuestOutputPaintConfig::kFsrSharpnessReductionMax,
+              label.c_str(), ImGuiSliderFlags_NoInput);
+          fsr_sharpness_reduction =
+              .5f * fsr_sharpness_reduction * fsr_sharpness_reduction;
+          ImGui::SameLine();
+          if (ImGui::Button("Reset##ResetFSRSharpnessReduction")) {
+            fsr_sharpness_reduction = ui::Presenter::GuestOutputPaintConfig ::
+                kFsrSharpnessReductionDefault;
+          }
+          new_presenter_config.SetFsrSharpnessReduction(
+              fsr_sharpness_reduction);
+        }
+
+        float cas_additional_sharpness =
+            new_presenter_config.GetCasAdditionalSharpness();
+        ImGui::TextUnformatted(
+            new_presenter_config.GetEffect() ==
+                    ui::Presenter::GuestOutputPaintConfig::Effect::kFsr
+                ? "CAS additional sharpness when not upscaling (higher is "
+                  "sharper):"
+                : "CAS additional sharpness (higher is sharper):");
+        ImGui::SliderFloat(
+            "##CASAdditionalSharpness", &cas_additional_sharpness,
+            ui::Presenter::GuestOutputPaintConfig::kCasAdditionalSharpnessMin,
+            ui::Presenter::GuestOutputPaintConfig::kCasAdditionalSharpnessMax,
+            "%.3f");
+        ImGui::SameLine();
+        if (ImGui::Button("Reset##ResetCASAdditionalSharpness")) {
+          cas_additional_sharpness = ui::Presenter::GuestOutputPaintConfig ::
+              kCasAdditionalSharpnessDefault;
+        }
+        new_presenter_config.SetCasAdditionalSharpness(
+            cas_additional_sharpness);
+
+        // There's no need to expose the setting for the maximum number of FSR
+        // EASU passes as it's largely meaningless if the user doesn't have a
+        // very high-resolution monitor compared to the original image size as
+        // most of the values of the slider will have no effect, and that's just
+        // very fine-grained performance control for a fixed-overhead pass only
+        // for huge screen resolutions.
+      }
+
+      ImGui::TreePop();
+    }
+
+    if (ImGui::TreeNodeEx("Dithering", ImGuiTreeNodeFlags_Framed |
+                                           ImGuiTreeNodeFlags_DefaultOpen)) {
+      bool dither = current_presenter_config.GetDither();
+      ImGui::Checkbox(
+          "Dither the final output to 8bpc to make gradients smoother",
+          &dither);
+      new_presenter_config.SetDither(dither);
+
+      ImGui::TreePop();
+    }
+
+    presenter->SetGuestOutputPaintConfigFromUIThread(new_presenter_config);
+
+    // Override the values in the cvars to save them to the config at exit if
+    // the user has set them to anything new.
+    ui::Presenter::GuestOutputPaintConfig cvars_presenter_config =
+        GetGuestOutputPaintConfigForCvars();
+    if (cvars_presenter_config.GetEffect() !=
+        new_presenter_config.GetEffect()) {
+      OVERRIDE_string(postprocess_scaling_and_sharpening,
+                      GetCvarValueForGuestOutputPaintEffect(
+                          new_presenter_config.GetEffect()));
+    }
+    if (cvars_presenter_config.GetCasAdditionalSharpness() !=
+        new_presenter_config.GetCasAdditionalSharpness()) {
+      OVERRIDE_double(postprocess_ffx_cas_additional_sharpness,
+                      new_presenter_config.GetCasAdditionalSharpness());
+    }
+    if (cvars_presenter_config.GetFsrSharpnessReduction() !=
+        new_presenter_config.GetFsrSharpnessReduction()) {
+      OVERRIDE_double(postprocess_ffx_fsr_sharpness_reduction,
+                      new_presenter_config.GetFsrSharpnessReduction());
+    }
+    if (cvars_presenter_config.GetDither() !=
+        new_presenter_config.GetDither()) {
+      OVERRIDE_bool(postprocess_dither, new_presenter_config.GetDither());
+    }
+  }
+
+  ImGui::End();
+
+  if (!dialog_open) {
+    Close();
+    emulator_window_.ToggleDisplayConfigDialog();
+    // `this` might have been destroyed by ToggleDisplayConfigDialog.
+    return;
+  }
+}
+
+void EmulatorWindow::ContentInstallDialog::OnDraw(ImGuiIO& io) {
+  ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(20, 20), ImGuiCond_FirstUseEver);
+
+  bool dialog_open = true;
+  if (!ImGui::Begin(
+          fmt::format("Installation Progress###{}", window_id_).c_str(),
+          &dialog_open,
+          ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize |
+              ImGuiWindowFlags_HorizontalScrollbar)) {
+    Close();
+    ImGui::End();
+    return;
+  }
+
+  bool is_everything_installed = true;
+  for (const auto& entry : *installation_entries_) {
+    ImGui::BeginTable(fmt::format("table_{}", entry.name_).c_str(), 2);
+    ImGui::TableNextRow(0);
+    ImGui::TableSetColumnIndex(0);
+    if (entry.icon_) {
+      ImGui::Image(reinterpret_cast<ImTextureID>(entry.icon_.get()),
+                   ui::default_image_icon_size);
+    } else {
+      ImGui::Dummy(ui::default_image_icon_size);
+    }
+    ImGui::TableNextColumn();
+
+    ImGui::Text("Name: %s", entry.name_.c_str());
+    ImGui::Text("Installation Path:");
+    ImGui::SameLine();
+    if (ImGui::TextLink(
+            xe::path_to_utf8(entry.data_installation_path_).c_str())) {
+      LaunchFileExplorer(emulator_window_.emulator_->content_root() /
+                         entry.data_installation_path_);
+    }
+
+    if (entry.content_type_ != xe::XContentType::kInvalid) {
+      ImGui::Text("Content Type: %s",
+                  XContentTypeMap.at(entry.content_type_).c_str());
+    }
+
+    std::string result = fmt::format(
+        "Status: {}", xe::Emulator::installStateStringName[static_cast<uint8_t>(
+                          entry.installation_state_)]);
+
+    if (entry.installation_state_ == xe::Emulator::InstallState::failed) {
+      result += fmt::format(" - {} ({:08X})",
+                            entry.installation_error_message_.c_str(),
+                            entry.installation_result_);
+    }
+
+    ImGui::Text("%s", result.c_str());
+    ImGui::EndTable();
+
+    if (entry.content_size_ > 0) {
+      ImGui::ProgressBar(static_cast<float>(entry.currently_installed_size_) /
+                         entry.content_size_);
+
+      if (entry.installation_state_ == Emulator::InstallState::installing ||
+          entry.installation_state_ == Emulator::InstallState::pending ||
+          entry.installation_state_ == Emulator::InstallState::preparing) {
+        is_everything_installed = false;
+      }
+    } else {
+      ImGui::ProgressBar(0.0f);
+    }
+
+    if (installation_entries_->size() > 1) {
+      ImGui::Separator();
+    }
+  }
+  ImGui::Spacing();
+
+  ImGui::BeginDisabled(!is_everything_installed);
+  if (ImGui::Button("Close")) {
+    ImGui::EndDisabled();
+    Close();
+    ImGui::End();
+    return;
+  }
+  ImGui::EndDisabled();
+
+  if (!dialog_open && is_everything_installed) {
+    Close();
+    ImGui::End();
+    return;
+  }
+  ImGui::End();
+}
+
+void EmulatorWindow::PauseMenuDialog::OnDraw(ImGuiIO& io) {
+  // One-time trace so a future crash log's last line pinpoints whether
+  // execution ever reached here at all - two guesses at the frontend-startup
+  // crash (a cvar-lookup guard, then dialog registration order) have both
+  // failed to fix it, so bisecting via logging is the next step rather than
+  // a third blind guess.
+  static bool logged_first_draw = false;
+  if (!logged_first_draw) {
+    logged_first_draw = true;
+    XELOGI("PauseMenuDialog::OnDraw first frame reached.");
+  }
+
+  // Handled at the very top, before any rendering this frame, so the frame
+  // where "Exit Game" was clicked still finishes and presents normally
+  // instead of tearing down mid-render.
+  if (exit_requested_) {
+    UWP::ExitApplication();
+    return;
+  }
+
+  // Toast notifications (e.g. achievement unlocks) draw regardless of
+  // whether the pause menu itself is open, so they're visible during
+  // gameplay - checked every frame for the same reason the chord below is.
+  std::string toast_text;
+  float toast_alpha = 0.0f;
+  if (xe::ToastNotificationGetCurrent(toast_text, toast_alpha)) {
+    const ImGuiViewport* toast_viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(
+        ImVec2(toast_viewport->Pos.x + toast_viewport->Size.x * 0.5f,
+               toast_viewport->Pos.y + toast_viewport->Size.y * 0.08f),
+        ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.85f * toast_alpha);
+    const ImGuiWindowFlags toast_flags =
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs |
+        ImGuiWindowFlags_NoFocusOnAppearing;
+    if (ImGui::Begin("##toast_notification", nullptr, toast_flags)) {
+      ImGui::PushStyleColor(ImGuiCol_Text,
+                            ImVec4(1.0f, 1.0f, 1.0f, toast_alpha));
+      ImGui::TextUnformatted(toast_text.c_str());
+      ImGui::PopStyleColor();
+    }
+    ImGui::End();
+  }
+
+  // View held + Menu just pressed toggles the menu open/closed - checked
+  // every frame regardless of whether a game is running or the frontend is
+  // showing, since this dialog never closes/deletes itself (unlike
+  // WinRTFrontendDialog, which is destroyed once a title launches).
+  bool just_opened = false;
+  if (ImGui::IsKeyDown(ImGuiKey_GamepadBack) &&
+      ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false)) {
+    show_menu_ = !show_menu_;
+    just_opened = show_menu_;
+  }
+  // Otherwise the same button presses used to navigate this menu (the B
+  // button to Resume, in particular) would simultaneously reach the running
+  // game's own input handling underneath it. is_xam_dialog_present_ is the
+  // same flag Xenia's own system dialogs (message boxes, on-screen keyboard)
+  // already use for this - it only affects the guest's XamInputGetState
+  // call (see xam_input.cc), not xenia-ui's own input_system_->GetState()
+  // calls, so it doesn't also blind this menu's own gamepad navigation the
+  // way suppressing InputSystem::GetState() itself did (tried and reverted -
+  // ImGuiDrawer::UpdateGamepads() reads through that same function to
+  // decide which controller to read for the UI, so that approach broke
+  // this menu's own input within about a frame of opening).
+  if (emulator_window_.emulator() && emulator_window_.emulator()->kernel_state()) {
+    emulator_window_.emulator()
+        ->kernel_state()
+        ->xam_state()
+        ->is_xam_dialog_present_.store(show_menu_);
+  }
+  if (!show_menu_) {
+    return;
+  }
+
+  const ImGuiViewport* viewport = ImGui::GetMainViewport();
+  ImDrawList* background_draw_list = ImGui::GetBackgroundDrawList();
+  background_draw_list->AddRectFilled(
+      viewport->Pos,
+      ImVec2(viewport->Pos.x + viewport->Size.x,
+             viewport->Pos.y + viewport->Size.y),
+      ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.6f)));
+
+  ImGui::SetNextWindowPos(
+      ImVec2(viewport->Pos.x + viewport->Size.x * 0.5f,
+             viewport->Pos.y + viewport->Size.y * 0.5f),
+      ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+  if (just_opened) {
+    ImGui::SetNextWindowFocus();
+  }
+  const ImGuiWindowFlags flags =
+      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
+      ImGuiWindowFlags_NoSavedSettings;
+  if (ImGui::Begin("##pause_menu", nullptr, flags)) {
+    ImGui::Text("Paused");
+    ImGui::Separator();
+    ImGui::Dummy(ImVec2(0.0f, 4.0f));
+    const ImVec2 button_size(260.0f, 0.0f);
+    if (ImGui::Button("Resume", button_size) ||
+        ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
+      show_menu_ = false;
+    }
+    if (ImGui::Button("Exit Game", button_size)) {
+      exit_requested_ = true;
+    }
+
+    ImGui::Dummy(ImVec2(0.0f, 8.0f));
+    ImGui::Separator();
+    ImGui::Text("Quick Settings");
+    auto find_mute = cvar::ConfigVars->find("mute");
+    auto c_mute = find_mute != cvar::ConfigVars->end()
+                      ? dynamic_cast<cvar::ConfigVar<bool>*>(find_mute->second)
+                      : nullptr;
+    if (c_mute && ImGui::Checkbox("Mute Audio", c_mute->current_value())) {
+      c_mute->SetConfigValue(!c_mute->GetTypedConfigValue());
+      config::SaveConfig();
+    }
+    auto find_vibration = cvar::ConfigVars->find("vibration");
+    auto c_vibration =
+        find_vibration != cvar::ConfigVars->end()
+            ? dynamic_cast<cvar::ConfigVar<bool>*>(find_vibration->second)
+            : nullptr;
+    if (c_vibration && ImGui::Checkbox("Controller Vibration",
+                                       c_vibration->current_value())) {
+      c_vibration->SetConfigValue(!c_vibration->GetTypedConfigValue());
+      config::SaveConfig();
+    }
+    auto find_vsync = cvar::ConfigVars->find("vsync");
+    auto c_vsync =
+        find_vsync != cvar::ConfigVars->end()
+            ? dynamic_cast<cvar::ConfigVar<bool>*>(find_vsync->second)
+            : nullptr;
+    if (c_vsync &&
+        ImGui::Checkbox("V-Sync", c_vsync->current_value())) {
+      c_vsync->SetConfigValue(!c_vsync->GetTypedConfigValue());
+      config::SaveConfig();
+    }
+
+    {
+      auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+          std::chrono::steady_clock::now() - session_start_time_);
+      int64_t total_seconds = elapsed.count();
+      ImGui::Text("Session time: %02lld:%02lld:%02lld",
+                  static_cast<long long>(total_seconds / 3600),
+                  static_cast<long long>((total_seconds / 60) % 60),
+                  static_cast<long long>(total_seconds % 60));
+    }
+
+    // RunTitle() (unchanged) refuses to load a title while one is already
+    // open, to avoid crashing the emulator - so this can only actually
+    // switch games from the dashboard, not mid-game. Disabled (rather than
+    // silently no-op'd) with an explanatory note while a title is running,
+    // so tapping an entry mid-game doesn't look like nothing happened.
+    if (!emulator_window_.recently_launched_titles_.empty()) {
+      const bool title_open = emulator_window_.emulator()->is_title_open();
+      ImGui::Dummy(ImVec2(0.0f, 8.0f));
+      ImGui::Separator();
+      ImGui::Text("Recently Played");
+      if (title_open) {
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f),
+                           "Exit Game first to switch titles.");
+      }
+      ImGui::BeginDisabled(title_open);
+      int shown = 0;
+      for (const RecentTitleEntry& entry :
+           emulator_window_.recently_launched_titles_) {
+        if (++shown > 5) {
+          break;
+        }
+        const std::string label = entry.title_name.empty()
+                                      ? entry.path_to_file.filename().string()
+                                      : entry.title_name;
+        ImGui::PushID(shown);
+        if (ImGui::Button(label.c_str(), button_size)) {
+          show_menu_ = false;
+          emulator_window_.RunTitle(entry.path_to_file);
+        }
+        ImGui::PopID();
+      }
+      ImGui::EndDisabled();
+    }
+  }
+  ImGui::End();
+}
+
+void EmulatorWindow::XMPConfigDialog::OnDraw(ImGuiIO& io) {
+  ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(20, 20), ImGuiCond_FirstUseEver);
+
+  bool dialog_open = true;
+  if (!ImGui::Begin("Audio Player Menu", &dialog_open,
+                    ImGuiWindowFlags_NoCollapse |
+                        ImGuiWindowFlags_AlwaysAutoResize |
+                        ImGuiWindowFlags_HorizontalScrollbar)) {
+    Close();
+    ImGui::End();
+    return;
+  }
+
+  auto audio_player = emulator_window_.emulator_->audio_media_player();
+  using xmp_state = kernel::xam::apps::XmpApp::State;
+  if (audio_player) {
+    ImGui::Text("Audio player status:");
+    ImGui::SameLine();
+    switch (audio_player->GetState()) {
+      case xmp_state::kIdle:
+        ImGui::Text("Idle");
+        break;
+      case xmp_state::kPaused:
+        ImGui::Text("Paused");
+        break;
+      case xmp_state::kPlaying:
+        ImGui::Text("Playing");
+        break;
+      default:
+        break;
+    }
+
+    if (audio_player->IsPlaying()) {
+      if (ImGui::Button("Pause")) {
+        audio_player->Pause();
+      }
+    } else if (audio_player->IsPaused()) {
+      if (ImGui::Button("Resume")) {
+        audio_player->Continue();
+      }
+    }
+
+    volume_ =
+        emulator_window_.emulator_->audio_media_player()->GetVolume()->load();
+
+    if (ImGui::SliderFloat("Audio player volume", &volume_, 0.0f, 1.0f,
+                           "%.2f")) {
+      audio_player->SetVolume(volume_);
+    }
+  }
+
+  ImGui::End();
+
+  if (!dialog_open) {
+    Close();
+    emulator_window_.xmp_config_dialog_.release();
+    return;
+  }
+}
+
+bool EmulatorWindow::Initialize() {
+  window_->AddListener(&window_listener_);
+  window_->AddInputListener(&window_listener_, kZOrderEmulatorWindowInput);
+
+  // Main menu.
+  // FIXME: This code is really messy.
+#if !XE_PLATFORM_WINRT
+  auto main_menu = MenuItem::Create(MenuItem::Type::kNormal);
+  auto file_menu = MenuItem::Create(MenuItem::Type::kPopup, "&File");
+  auto recent_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Open Recent");
+  auto zar_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Zar Package");
+  FillRecentlyLaunchedTitlesMenu(recent_menu.get());
+  {
+    file_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, "&Open...", "Ctrl+O",
+                         std::bind(&EmulatorWindow::FileOpen, this)));
+    file_menu->AddChild(std::move(recent_menu));
+    file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+    zar_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, "Create",
+                         std::bind(&EmulatorWindow::CreateZarchive, this)));
+    zar_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, "Extract",
+                         std::bind(&EmulatorWindow::ExtractZarchive, this)));
+    file_menu->AddChild(std::move(zar_menu));
+#ifdef DEBUG
+    file_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, "Close",
+                         std::bind(&EmulatorWindow::FileClose, this)));
+#endif  // #ifdef DEBUG
+    file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+    file_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "Show content directory...",
+        std::bind(&EmulatorWindow::ShowContentDirectory, this)));
+    file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+    file_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, "E&xit", "Alt+F4",
+                         [this]() { window_->RequestClose(); }));
+  }
+  main_menu->AddChild(std::move(file_menu));
+
+  // Profile Menu
+  auto profile_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Profile");
+  {
+    profile_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "&Show Profile Menu", "",
+        std::bind(&EmulatorWindow::ToggleProfilesConfigDialog, this)));
+  }
+  main_menu->AddChild(std::move(profile_menu));
+
+  // Content Menu
+  auto content_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Content");
+  {
+    content_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, "Install Content",
+                         std::bind(&EmulatorWindow::InstallContent, this)));
+    content_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, "Extract Content",
+                         std::bind(&EmulatorWindow::ExtractContent, this, "")));
+    content_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "Show Installed Content",
+        std::bind(&EmulatorWindow::ToggleContentListDialog, this)));
+  }
+  main_menu->AddChild(std::move(content_menu));
+
+  // CPU menu.
+  auto cpu_menu = MenuItem::Create(MenuItem::Type::kPopup, "&CPU");
+  {
+    cpu_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "&Reset Time Scalar", "Numpad *",
+        std::bind(&EmulatorWindow::CpuTimeScalarReset, this)));
+    cpu_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "Time Scalar /= 2", "Numpad -",
+        std::bind(&EmulatorWindow::CpuTimeScalarSetHalf, this)));
+    cpu_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "Time Scalar *= 2", "Numpad +",
+        std::bind(&EmulatorWindow::CpuTimeScalarSetDouble, this)));
+  }
+#if XE_OPTION_PROFILING
+  cpu_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+  {
+    cpu_menu->AddChild(MenuItem::Create(MenuItem::Type::kString,
+                                        "Toggle Profiler &Display", "F3",
+                                        []() { Profiler::ToggleDisplay(); }));
+    cpu_menu->AddChild(MenuItem::Create(MenuItem::Type::kString,
+                                        "&Pause/Resume Profiler", "`",
+                                        []() { Profiler::TogglePause(); }));
+  }
+#endif
+  cpu_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+  {
+    cpu_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "&Break and Show Guest Debugger",
+        "Pause/Break", std::bind(&EmulatorWindow::CpuBreakIntoDebugger, this)));
+    cpu_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "&Break into Host Debugger",
+        "Ctrl+Pause/Break",
+        std::bind(&EmulatorWindow::CpuBreakIntoHostDebugger, this)));
+  }
+  main_menu->AddChild(std::move(cpu_menu));
+
+  // GPU menu.
+  auto gpu_menu = MenuItem::Create(MenuItem::Type::kPopup, "&GPU");
+  {
+    gpu_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, "&Trace Frame", "F4",
+                         std::bind(&EmulatorWindow::GpuTraceFrame, this)));
+  }
+  gpu_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+  {
+    gpu_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, "&Clear Runtime Caches", "F5",
+                         std::bind(&EmulatorWindow::GpuClearCaches, this)));
+  }
+  main_menu->AddChild(std::move(gpu_menu));
+
+  // Display menu.
+  auto display_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Display");
+  {
+    display_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "&Post-processing settings", "F6",
+        std::bind(&EmulatorWindow::ToggleDisplayConfigDialog, this)));
+  }
+  display_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+  {
+    display_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, "&Fullscreen", "F11",
+                         std::bind(&EmulatorWindow::ToggleFullscreen, this)));
+  }
+  main_menu->AddChild(std::move(display_menu));
+
+  // HID menu.
+  auto hid_menu = MenuItem::Create(MenuItem::Type::kPopup, "&HID");
+  {
+    hid_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "&Toggle controller vibration", "",
+        std::bind(&EmulatorWindow::ToggleControllerVibration, this)));
+    hid_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "&Display controller hotkeys", "",
+        std::bind(&EmulatorWindow::DisplayHotKeysConfig, this)));
+  }
+  main_menu->AddChild(std::move(hid_menu));
+
+  // XMP menu
+  auto xmp_menu = MenuItem::Create(MenuItem::Type::kPopup, "&XMP");
+  {
+    xmp_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "&Show XMP Menu", "",
+        std::bind(&EmulatorWindow::ToggleXMPConfigDialog, this)));
+  }
+  main_menu->AddChild(std::move(xmp_menu));
+
+  // Console menu
+  auto console_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Console");
+  {
+    console_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "&Open console settings", "",
+        std::bind(&EmulatorWindow::ToggleConsoleSettingsDialog, this)));
+  }
+  main_menu->AddChild(std::move(console_menu));
+
+  // Help menu.
+  auto help_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Help");
+  {
+    help_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, "FA&Q...", "F1",
+                         std::bind(&EmulatorWindow::ShowFAQ, this)));
+    help_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+    help_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, "Game &compatibility...",
+                         std::bind(&EmulatorWindow::ShowCompatibility, this)));
+    help_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+    help_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, "Build commit on GitHub...", "F2",
+        std::bind(&EmulatorWindow::ShowBuildCommit, this)));
+    help_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "Recent changes on GitHub...", []() {
+          LaunchWebBrowser(
+              "https://github.com/xenia-project/xenia/compare/" XE_BUILD_COMMIT
+              "..." XE_BUILD_BRANCH);
+        }));
+    help_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+    help_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "&About...",
+        []() { LaunchWebBrowser("https://xenia.jp/about/"); }));
+  }
+  main_menu->AddChild(std::move(help_menu));
+
+  window_->SetMainMenu(std::move(main_menu));
+#endif
+
+  window_->SetMainMenuEnabled(false);
+
+  UpdateTitle();
+
+  if (!window_->Open()) {
+    XELOGE("Failed to open the platform window");
+    return false;
+  }
+
+  Profiler::SetUserIO(kZOrderProfiler, window_.get(), nullptr, nullptr);
+
+  return true;
+}
+
+const char* EmulatorWindow::GetCvarValueForSwapPostEffect(
+    gpu::CommandProcessor::SwapPostEffect effect) {
+  switch (effect) {
+    case gpu::CommandProcessor::SwapPostEffect::kFxaa:
+      return "fxaa";
+    case gpu::CommandProcessor::SwapPostEffect::kFxaaExtreme:
+      return "fxaa_extreme";
+    default:
+      return "";
+  }
+}
+
+gpu::CommandProcessor::SwapPostEffect
+EmulatorWindow::GetSwapPostEffectForCvarValue(const std::string& cvar_value) {
+  if (cvar_value == GetCvarValueForSwapPostEffect(
+                        gpu::CommandProcessor::SwapPostEffect::kFxaa)) {
+    return gpu::CommandProcessor::SwapPostEffect::kFxaa;
+  }
+  if (cvar_value == GetCvarValueForSwapPostEffect(
+                        gpu::CommandProcessor::SwapPostEffect::kFxaaExtreme)) {
+    return gpu::CommandProcessor::SwapPostEffect::kFxaaExtreme;
+  }
+  return gpu::CommandProcessor::SwapPostEffect::kNone;
+}
+
+const char* EmulatorWindow::GetCvarValueForGuestOutputPaintEffect(
+    ui::Presenter::GuestOutputPaintConfig::Effect effect) {
+  switch (effect) {
+    case ui::Presenter::GuestOutputPaintConfig::Effect::kCas:
+      return "cas";
+    case ui::Presenter::GuestOutputPaintConfig::Effect::kFsr:
+      return "fsr";
+    default:
+      return "";
+  }
+}
+
+ui::Presenter::GuestOutputPaintConfig::Effect
+EmulatorWindow::GetGuestOutputPaintEffectForCvarValue(
+    const std::string& cvar_value) {
+  if (cvar_value == GetCvarValueForGuestOutputPaintEffect(
+                        ui::Presenter::GuestOutputPaintConfig::Effect::kCas)) {
+    return ui::Presenter::GuestOutputPaintConfig::Effect::kCas;
+  }
+  if (cvar_value == GetCvarValueForGuestOutputPaintEffect(
+                        ui::Presenter::GuestOutputPaintConfig::Effect::kFsr)) {
+    return ui::Presenter::GuestOutputPaintConfig::Effect::kFsr;
+  }
+  return ui::Presenter::GuestOutputPaintConfig::Effect::kBilinear;
+}
+
+ui::Presenter::GuestOutputPaintConfig
+EmulatorWindow::GetGuestOutputPaintConfigForCvars() {
+  ui::Presenter::GuestOutputPaintConfig paint_config;
+  paint_config.SetAllowOverscanCutoff(true);
+  paint_config.SetEffect(GetGuestOutputPaintEffectForCvarValue(
+      cvars::postprocess_scaling_and_sharpening));
+  paint_config.SetCasAdditionalSharpness(
+      float(cvars::postprocess_ffx_cas_additional_sharpness));
+  paint_config.SetFsrMaxUpsamplingPasses(
+      cvars::postprocess_ffx_fsr_max_upsampling_passes);
+  paint_config.SetFsrSharpnessReduction(
+      float(cvars::postprocess_ffx_fsr_sharpness_reduction));
+  paint_config.SetDither(cvars::postprocess_dither);
+  return paint_config;
+}
+
+void EmulatorWindow::ApplyDisplayConfigForCvars() {
+  gpu::GraphicsSystem* graphics_system = emulator_->graphics_system();
+  if (!graphics_system) {
+    return;
+  }
+
+  gpu::CommandProcessor* command_processor =
+      graphics_system->command_processor();
+  if (command_processor) {
+    command_processor->SetDesiredSwapPostEffect(
+        GetSwapPostEffectForCvarValue(cvars::postprocess_antialiasing));
+  }
+
+  ui::Presenter* presenter = graphics_system->presenter();
+  if (presenter) {
+    presenter->SetGuestOutputPaintConfigFromUIThread(
+        GetGuestOutputPaintConfigForCvars());
+  }
+}
+
+void EmulatorWindow::OnKeyDown(ui::KeyEvent& e) {
+  if (!emulator_initialized_) {
+    return;
+  }
+
+  switch (e.virtual_key()) {
+    case ui::VirtualKey::kO: {
+      if (!e.is_ctrl_pressed()) {
+        return;
+      }
+      FileOpen();
+    } break;
+    case ui::VirtualKey::kMultiply: {
+      CpuTimeScalarReset();
+    } break;
+    case ui::VirtualKey::kSubtract: {
+      CpuTimeScalarSetHalf();
+    } break;
+    case ui::VirtualKey::kAdd: {
+      CpuTimeScalarSetDouble();
+    } break;
+
+    case ui::VirtualKey::kF3: {
+      Profiler::ToggleDisplay();
+    } break;
+
+    case ui::VirtualKey::kF4: {
+      GpuTraceFrame();
+    } break;
+    case ui::VirtualKey::kF5: {
+      GpuClearCaches();
+    } break;
+
+    case ui::VirtualKey::kF6: {
+      ToggleDisplayConfigDialog();
+    } break;
+    case ui::VirtualKey::kF11: {
+      ToggleFullscreen();
+    } break;
+    case ui::VirtualKey::kEscape: {
+      // Allow users to escape fullscreen (but not enter it).
+      if (!window_->IsFullscreen()) {
+        return;
+      }
+      SetFullscreen(false);
+    } break;
+
+#ifdef DEBUG
+    case ui::VirtualKey::kF7: {
+      // Save to file
+      // TODO: Choose path based on user input, or from options
+      // TODO: Spawn a new thread to do this.
+      emulator()->SaveToFile("test.sav");
+    } break;
+    case ui::VirtualKey::kF8: {
+      // Restore from file
+      // TODO: Choose path from user
+      // TODO: Spawn a new thread to do this.
+      emulator()->RestoreFromFile("test.sav");
+    } break;
+#endif  // #ifdef DEBUG
+
+    case ui::VirtualKey::kPause: {
+      CpuBreakIntoDebugger();
+    } break;
+    case ui::VirtualKey::kCancel: {
+      CpuBreakIntoHostDebugger();
+    } break;
+
+    case ui::VirtualKey::kF1: {
+      ShowFAQ();
+    } break;
+
+    case ui::VirtualKey::kF2: {
+      ShowBuildCommit();
+    } break;
+
+    case ui::VirtualKey::kF9: {
+      RunPreviouslyPlayedTitle();
+    } break;
+
+    default:
+      return;
+  }
+
+  e.set_handled(true);
+}
+
+void EmulatorWindow::OnMouseDown(const ui::MouseEvent& e) {
+  ToggleFullscreenOnDoubleClick();
+}
+
+void EmulatorWindow::OnMouseUp(const ui::MouseEvent& e) {
+  last_mouse_up = steady_clock::now();
+}
+
+void EmulatorWindow::ToggleFullscreenOnDoubleClick() {
+  // this function tests if user has double clicked.
+  // if double click was achieved the fullscreen gets toggled
+  const auto now = steady_clock::now();  // current mouse event time
+  const int16_t mouse_down_max_threshold = 250;
+  const int16_t mouse_up_max_threshold = 250;
+  const int16_t mouse_up_down_max_delta = 100;
+  // max delta to prevent 'chaining' of double clicks with next mouse events
+
+  const auto last_mouse_down_delta = diff_in_ms(now, last_mouse_down);
+  if (last_mouse_down_delta >= mouse_down_max_threshold) {
+    last_mouse_down = now;
+    return;
+  }
+
+  const auto last_mouse_up_delta = diff_in_ms(now, last_mouse_up);
+  const auto mouse_event_deltas = diff_in_ms(last_mouse_up, last_mouse_down);
+  if (last_mouse_up_delta >= mouse_up_max_threshold) {
+    return;
+  }
+
+  if (mouse_event_deltas < mouse_up_down_max_delta) {
+    ToggleFullscreen();
+  }
+}
+
+void EmulatorWindow::FileDrop(const std::filesystem::path& path) {
+  if (!emulator_initialized_) {
+    return;
+  }
+
+  RunTitle(path);
+}
+
+void EmulatorWindow::FileOpen() {
+  std::filesystem::path path;
+#if !XE_PLATFORM_WINRT
+  auto file_picker = xe::ui::FilePicker::Create();
+  file_picker->set_mode(ui::FilePicker::Mode::kOpen);
+  file_picker->set_type(ui::FilePicker::Type::kFile);
+  file_picker->set_multi_selection(false);
+  file_picker->set_title("Select Content Package");
+  file_picker->set_extensions({
+      {"Supported Files", "*.iso;*.xex;*.*"},
+      {"Disc Image (*.iso)", "*.iso"},
+      {"Xbox Executable (*.xex)", "*.xex"},
+      //{"Content Package (*.xcp)", "*.xcp" },
+      {"All Files (*.*)", "*.*"},
+  });
+  if (file_picker->Show(window_.get())) {
+    auto selected_files = file_picker->selected_files();
+    if (!selected_files.empty()) {
+      path = selected_files[0];
+    }
+    // Only run the title if a file is selected
+    RunTitle(path);
+  }
+#else
+  imgui_drawer()->SetIgnoreInput(true);
+  UWP::SelectFile([=](std::string file) {
+    imgui_drawer()->SetIgnoreInput(false);
+    if (file == "") return;
+
+    // Normalize the path and make absolute.
+    auto abs_path = std::filesystem::absolute(file);
+    RunTitle(abs_path);
+  });
+#endif
+}
+
+void EmulatorWindow::FileClose() { emulator_->TerminateTitle(); }
+
+void EmulatorWindow::InstallContent() {
+  std::vector<std::filesystem::path> paths;
+
+#if !XE_PLATFORM_WINRT
+  auto file_picker = xe::ui::FilePicker::Create();
+  file_picker->set_mode(ui::FilePicker::Mode::kOpen);
+  file_picker->set_type(ui::FilePicker::Type::kFile);
+  file_picker->set_multi_selection(true);
+  file_picker->set_title("Select Content Package");
+  file_picker->set_extensions({
+      {"All Files (*.*)", "*.*"},
+  });
+  if (file_picker->Show(window_.get())) {
+    paths = file_picker->selected_files();
+  }
+
+  if (paths.empty()) {
+    return;
+  }
+
+  std::shared_ptr<std::vector<Emulator::ContentInstallEntry>>
+      content_installation_status =
+          std::make_shared<std::vector<Emulator::ContentInstallEntry>>();
+
+  for (const auto& path : paths) {
+    content_installation_status->push_back({path});
+  }
+
+  for (auto& entry : *content_installation_status) {
+    emulator_->ProcessContentPackageHeader(entry.path_, entry);
+  }
+
+  auto installationThread = std::thread([this, content_installation_status] {
+    for (auto& entry : *content_installation_status) {
+      emulator_->InstallContentPackage(entry.path_, entry);
+    }
+  });
+  installationThread.detach();
+
+  new ContentInstallDialog(imgui_drawer_.get(), *this,
+                           content_installation_status);
+#else
+  imgui_drawer()->SetIgnoreInput(true);
+  app_context().CallInUIThread([this]() {
+    UWP::SelectFiles([this](std::vector<std::string> files) {
+      imgui_drawer()->SetIgnoreInput(false);
+      if (files.empty()) {
+        return;
+      }
+
+      for (auto path : files) {
+        try {
+          auto abs_path = std::filesystem::absolute(path);
+          Emulator::ContentInstallEntry install_entry(abs_path);
+          auto result = emulator_->InstallContentPackage(abs_path, install_entry);
+
+          if (result != X_STATUS_SUCCESS) {
+            xe::ui::ImGuiDialog::ShowMessageBox(
+                imgui_drawer_.get(), "Failed to install content!",
+                "Failed to install content!\n\nCheck xenia.log for technical "
+                "details.");
+          }
+        } catch (const std::exception&) {
+          xe::ui::ImGuiDialog::ShowMessageBox(
+              imgui_drawer_.get(), "Failed to install content!",
+              "Exception while installing selected content.\n\nCheck xenia.log "
+              "for technical details.");
+        } catch (...) {
+          xe::ui::ImGuiDialog::ShowMessageBox(
+              imgui_drawer_.get(), "Failed to install content!",
+              "Unknown exception while installing selected content.\n\nCheck "
+              "xenia.log for technical details.");
+        }
+      }
+    });
+  });
+#endif
+}
+
+void EmulatorWindow::InstallContentForTitle(
+    const std::string& title_id, const std::filesystem::path& storage_root,
+    DlcInstallMode mode) {
+#if XE_PLATFORM_WINRT
+  try {
+    InstallContent();
+  } catch (const std::exception& e) {
+    XELOGE("InstallContentForTitle: exception: {}", e.what());
+    throw;
+  } catch (...) {
+    XELOGE("InstallContentForTitle: unknown exception");
+    throw;
+  }
+#else
+  (void)title_id;
+  (void)storage_root;
+  (void)mode;
+  InstallContent();
+#endif
+}
+
+void EmulatorWindow::ExtractContent(const std::filesystem::path file) {
+  std::vector<std::filesystem::path> package_files;
+  std::filesystem::path extract_dir;
+
+  if (!file.empty()) {
+    package_files.push_back(file);
+  } else {
+    auto file_picker = xe::ui::FilePicker::Create();
+    file_picker->set_mode(ui::FilePicker::Mode::kOpen);
+    file_picker->set_type(ui::FilePicker::Type::kFile);
+    file_picker->set_multi_selection(true);
+    file_picker->set_title("Select Content Package");
+    file_picker->set_extensions({
+        {"All Files (*.*)", "*.*"},
+    });
+
+    if (file_picker->Show(window_.get())) {
+      package_files = file_picker->selected_files();
+    }
+
+    if (package_files.empty()) {
+      return;
+    }
+  }
+  auto save_file_picker = xe::ui::FilePicker::Create();
+  save_file_picker->set_mode(ui::FilePicker::Mode::kOpen);
+  save_file_picker->set_type(ui::FilePicker::Type::kDirectory);
+  save_file_picker->set_title("Select Directory to Extract");
+
+  if (save_file_picker->Show(window_.get())) {
+    extract_dir = save_file_picker->selected_files().front();
+  }
+
+  if (extract_dir.empty()) {
+    return;
+  }
+
+  std::shared_ptr<std::vector<Emulator::ContentInstallEntry>>
+      content_installation_status =
+          std::make_shared<std::vector<Emulator::ContentInstallEntry>>();
+
+  for (const auto& path : package_files) {
+    content_installation_status->push_back({path});
+  }
+
+  for (auto& entry : *content_installation_status) {
+    emulator_->ProcessContentPackageHeader(entry.path_, entry);
+    entry.data_installation_path_ = extract_dir;
+    entry.header_installation_path_ = "";
+  }
+
+  auto installationThread = std::thread([this, content_installation_status] {
+    for (auto& entry : *content_installation_status) {
+      emulator_->ExtractContentPackage(entry.path_, entry);
+    }
+  });
+  installationThread.detach();
+
+  new ContentInstallDialog(imgui_drawer_.get(), *this,
+                           content_installation_status);
+}
+
+void EmulatorWindow::ExtractZarchive() {
+  std::vector<std::filesystem::path> zarchive_files;
+  std::filesystem::path extract_dir;
+
+  auto file_picker = xe::ui::FilePicker::Create();
+  file_picker->set_mode(ui::FilePicker::Mode::kOpen);
+  file_picker->set_type(ui::FilePicker::Type::kFile);
+  file_picker->set_multi_selection(true);
+  file_picker->set_title("Select Zar Package");
+  file_picker->set_extensions({
+      {"Zarchive Files (*.zar)", "*.zar"},
+  });
+
+  if (file_picker->Show(window_.get())) {
+    zarchive_files = file_picker->selected_files();
+  }
+
+  if (zarchive_files.empty()) {
+    return;
+  }
+
+  file_picker->set_type(ui::FilePicker::Type::kDirectory);
+  file_picker->set_title("Select Directory to Extract");
+
+  if (file_picker->Show(window_.get())) {
+    extract_dir = file_picker->selected_files().front();
+  }
+
+  if (extract_dir.empty()) {
+    return;
+  }
+
+  std::string extract_overview = "";
+
+  for (auto& zarchive_file_path : zarchive_files) {
+    extract_overview += "\n" + path_to_utf8(zarchive_file_path);
+  }
+
+  app_context_.CallInUIThread([&]() {
+    new xe::ui::HostNotificationWindow(imgui_drawer(), "Extracting...",
+                                       string_util::trim(extract_overview), 0);
+  });
+
+  auto run = [this, extract_dir, zarchive_files]() -> void {
+    std::string summary = "";
+
+    for (auto& zarchive_file_path : zarchive_files) {
+      // Normalize the path and make absolute.
+      auto abs_path = std::filesystem::absolute(zarchive_file_path);
+      std::filesystem::path abs_extract_dir;
+
+      if (zarchive_files.size() > 1) {
+        abs_extract_dir =
+            std::filesystem::absolute((extract_dir / abs_path.stem()));
+      } else {
+        abs_extract_dir = std::filesystem::absolute(extract_dir);
+      }
+
+      XELOGI("Extracting zar package: {}\n",
+             zarchive_file_path.filename().string());
+
+      auto result =
+          emulator_->ExtractZarchivePackage(abs_path, abs_extract_dir);
+
+      if (result != X_STATUS_SUCCESS) {
+        std::error_code ec;
+
+        if (!std::filesystem::is_empty(abs_extract_dir)) {
+          std::filesystem::remove(abs_extract_dir, ec);
+        }
+
+        summary += fmt::format("\nFailed: {}", zarchive_file_path);
+
+        XELOGE("Failed to extract Zarchive package.", result);
+      } else {
+        summary += fmt::format("\nSuccess: {}", abs_extract_dir);
+      }
+    }
+
+    new xe::ui::HostNotificationWindow(imgui_drawer(), "Zar Extraction Summary",
+                                       string_util::trim(summary), 0);
+  };
+
+  auto zarThread = std::thread(run);
+  zarThread.detach();
+}
+
+void EmulatorWindow::CreateZarchive() {
+  std::vector<std::filesystem::path> content_dirs;
+  std::filesystem::path zarchive_dir;
+
+  auto file_picker = xe::ui::FilePicker::Create();
+  file_picker->set_mode(ui::FilePicker::Mode::kOpen);
+  file_picker->set_type(ui::FilePicker::Type::kDirectory);
+  file_picker->set_multi_selection(true);
+  file_picker->set_title("Select Contents");
+
+  if (file_picker->Show(window_.get())) {
+    content_dirs = file_picker->selected_files();
+  }
+
+  if (content_dirs.empty()) {
+    return;
+  }
+
+  if (content_dirs.size() == 1) {
+    file_picker->set_mode(ui::FilePicker::Mode::kSave);
+    file_picker->set_type(ui::FilePicker::Type::kFile);
+    file_picker->set_multi_selection(false);
+    file_picker->set_file_name(content_dirs.front().filename().string());
+    file_picker->set_default_extension("zar");
+    file_picker->set_title("Zarchive File");
+    file_picker->set_extensions({
+        {"Zarchive File (*.zar)", "*.zar"},
+    });
+  } else {
+    file_picker->set_title("Output Directory");
+  }
+
+  if (file_picker->Show(window_.get())) {
+    zarchive_dir = file_picker->selected_files().front();
+  }
+
+  if (zarchive_dir.empty()) {
+    return;
+  }
+
+  std::string create_overview = "";
+
+  std::map<std::filesystem::path, std::filesystem::path> zarchive_files{};
+
+  for (auto& content_path : content_dirs) {
+    // Normalize the path and make absolute.
+    auto abs_content_dir = std::filesystem::absolute(content_path);
+    std::filesystem::path abs_zarchive_file;
+
+    if (content_dirs.size() > 1) {
+      abs_zarchive_file = std::filesystem::absolute(
+          (zarchive_dir / abs_content_dir.filename().concat(".zar")));
+    } else {
+      abs_zarchive_file = std::filesystem::absolute(zarchive_dir);
+    }
+
+    zarchive_files[content_path] = abs_zarchive_file;
+
+    create_overview += "\n" + path_to_utf8(abs_zarchive_file);
+  }
+
+  app_context_.CallInUIThread([&]() {
+    new xe::ui::HostNotificationWindow(imgui_drawer(), "Creating...",
+                                       string_util::trim(create_overview), 0);
+  });
+
+  auto run = [this, zarchive_files]() -> void {
+    std::string summary = "";
+
+    for (auto const& [content_path, zarchive_file] : zarchive_files) {
+      // Normalize the path and make absolute.
+      auto abs_content_dir = std::filesystem::absolute(content_path);
+
+      XELOGI("Creating zar package: {}\n", zarchive_file.filename().string());
+
+      auto result =
+          emulator_->CreateZarchivePackage(abs_content_dir, zarchive_file);
+
+      if (result != X_ERROR_SUCCESS) {
+        std::error_code ec;
+
+        // delete incomplete output file
+        std::filesystem::remove(zarchive_file, ec);
+
+        summary += fmt::format("\nFailed: {}", abs_content_dir);
+
+        XELOGE("Failed to create Zarchive package.", result);
+      } else {
+        summary += fmt::format("\nSuccess: {}", zarchive_file);
+      }
+    }
+
+    new xe::ui::HostNotificationWindow(imgui_drawer(), "Zar Creation Summary",
+                                       string_util::trim(summary), 0);
+  };
+
+  auto zarThread = std::thread(run);
+  zarThread.detach();
+}
+
+void EmulatorWindow::ShowContentDirectory() {
+  std::filesystem::path target_path;
+
+  auto content_root = emulator_->content_root();
+  if (!emulator_->is_title_open() || !emulator_->kernel_state()) {
+    target_path = content_root;
+  } else {
+    // TODO(gibbed): expose this via ContentManager?
+    auto title_id =
+        fmt::format("{:08X}", emulator_->kernel_state()->title_id());
+    auto package_root = content_root / title_id;
+    target_path = package_root;
+  }
+
+  if (!std::filesystem::exists(target_path)) {
+    std::filesystem::create_directories(target_path);
+  }
+
+  LaunchFileExplorer(target_path);
+}
+
+void EmulatorWindow::CpuTimeScalarReset() {
+  Clock::set_guest_time_scalar(1.0);
+  UpdateTitle();
+}
+
+void EmulatorWindow::CpuTimeScalarSetHalf() {
+  Clock::set_guest_time_scalar(Clock::guest_time_scalar() / 2.0);
+  UpdateTitle();
+}
+
+void EmulatorWindow::CpuTimeScalarSetDouble() {
+  Clock::set_guest_time_scalar(Clock::guest_time_scalar() * 2.0);
+  UpdateTitle();
+}
+
+void EmulatorWindow::CpuBreakIntoDebugger() {
+  if (!cvars::debug) {
+    xe::ui::ImGuiDialog::ShowMessageBox(imgui_drawer_.get(), "Xenia Debugger",
+                                        "Xenia must be launched with the "
+                                        "--debug flag in order to enable "
+                                        "debugging.");
+    return;
+  }
+  auto processor = emulator()->processor();
+  if (processor->execution_state() == cpu::ExecutionState::kRunning) {
+    // Currently running, so interrupt (and show the debugger).
+    processor->Pause();
+  } else {
+    // Not running, so just bring the debugger into focus.
+    processor->ShowDebugger();
+  }
+}
+
+void EmulatorWindow::CpuBreakIntoHostDebugger() { xe::debugging::Break(); }
+
+void EmulatorWindow::GpuTraceFrame() {
+  emulator()->graphics_system()->RequestFrameTrace();
+}
+
+void EmulatorWindow::GpuClearCaches() {
+  emulator()->graphics_system()->ClearCaches();
+}
+
+void EmulatorWindow::SetFullscreen(bool fullscreen_) {
+  if (window_->IsFullscreen() == fullscreen_) {
+    return;
+  }
+
+  OVERRIDE_bool(fullscreen, fullscreen_);
+
+  window_->SetFullscreen(fullscreen_);
+  window_->SetCursorVisibility(fullscreen_
+                                   ? ui::Window::CursorVisibility::kAutoHidden
+                                   : ui::Window::CursorVisibility::kVisible);
+}
+
+void EmulatorWindow::ToggleFullscreen() {
+  SetFullscreen(!window_->IsFullscreen());
+}
+
+void EmulatorWindow::ToggleDisplayConfigDialog() {
+  if (!display_config_dialog_) {
+    display_config_dialog_ =
+        std::make_unique<DisplayConfigDialog>(imgui_drawer_.get(), *this);
+  } else {
+    if (display_config_dialog_->IsClosing()) {
+      display_config_dialog_.release();
+    } else {
+      display_config_dialog_.reset();
+    }
+  }
+}
+
+void EmulatorWindow::DetachProfileConfigDialog(ProfileConfigDialog* dialog) {
+  if (profile_config_dialog_.get() == dialog) {
+    profile_config_dialog_.release();
+  }
+}
+
+void EmulatorWindow::ToggleProfilesConfigDialog() {
+  if (!profile_config_dialog_) {
+    disable_hotkeys_ = true;
+
+    if (emulator_->kernel_state()->xam_state()->IsUIActive()) {
+      return;
+    }
+
+    emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI,
+                                                     true);
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(true);
+
+    profile_config_dialog_ =
+        std::make_unique<ProfileConfigDialog>(imgui_drawer_.get(), this);
+  } else {
+    disable_hotkeys_ = false;
+    emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI,
+                                                     false);
+    if (profile_config_dialog_->IsClosing()) {
+      profile_config_dialog_.release();
+    } else {
+      profile_config_dialog_.reset();
+    }
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
+  }
+}
+
+void EmulatorWindow::ToggleXMPConfigDialog() {
+  if (!xmp_config_dialog_) {
+    xmp_config_dialog_ = std::unique_ptr<XMPConfigDialog>(
+        new XMPConfigDialog(imgui_drawer_.get(), *this));
+  } else {
+    xmp_config_dialog_.reset();
+  }
+}
+
+void EmulatorWindow::ToggleConsoleSettingsDialog() {
+  if (!console_settings_dialog_) {
+    console_settings_dialog_ =
+        std::unique_ptr<ConsoleSettingsDialog>(new ConsoleSettingsDialog(
+            imgui_drawer_.get(), *this, emulator_->kernel_state()->xconfig()));
+  } else {
+    if (console_settings_dialog_->IsClosing()) {
+      console_settings_dialog_.release();
+    } else {
+      console_settings_dialog_.reset();
+    }
+  }
+}
+
+void EmulatorWindow::ToggleContentListDialog() {
+  if (!content_list_dialog_) {
+    content_list_dialog_ = std::unique_ptr<ContentListDialog>(
+        new ContentListDialog(imgui_drawer_.get(), *this,
+                              emulator_->kernel_state()->content_manager()));
+  } else {
+    if (content_list_dialog_->IsClosing()) {
+      content_list_dialog_.release();
+    } else {
+      content_list_dialog_.reset();
+    }
+  }
+}
+
+void EmulatorWindow::ToggleControllerVibration() {
+  auto input_sys = emulator()->input_system();
+  if (input_sys) {
+    auto input_lock = input_sys->lock();
+
+    input_sys->ToggleVibration();
+  }
+}
+
+void EmulatorWindow::ShowCompatibility() {
+  const std::string_view base_url =
+      "https://github.com/xenia-project/game-compatibility/issues";
+  std::string url;
+  // Avoid searching for a title ID of "00000000".
+  uint32_t title_id = emulator_->title_id();
+  if (!title_id) {
+    url = base_url;
+  } else {
+    url = fmt::format("{}?q=is%3Aissue+is%3Aopen+{:08X}", base_url, title_id);
+  }
+  LaunchWebBrowser(url);
+}
+
+void EmulatorWindow::ShowFAQ() {
+  LaunchWebBrowser("https://github.com/xenia-project/xenia/wiki/FAQ");
+}
+
+void EmulatorWindow::ShowBuildCommit() {
+#ifdef XE_BUILD_IS_PR
+  LaunchWebBrowser(
+      "https://github.com/xenia-project/xenia/pull/" XE_BUILD_PR_NUMBER);
+#else
+  LaunchWebBrowser(
+      "https://github.com/xenia-project/xenia/commit/" XE_BUILD_COMMIT);
+#endif
+}
+
+void EmulatorWindow::UpdateTitle() {
+  xe::StringBuffer sb;
+  sb.Append(base_title_);
+
+  // Title information, if available
+  if (emulator()->is_title_open()) {
+    sb.AppendFormat(" | [{:08X}", emulator()->title_id());
+    auto title_version = emulator()->title_version();
+    if (!title_version.empty()) {
+      sb.Append(" v");
+      sb.Append(title_version);
+    }
+    sb.Append("]");
+
+    auto title_name = emulator()->title_name();
+    if (!title_name.empty()) {
+      sb.Append(" ");
+      sb.Append(title_name);
+    }
+  }
+
+  // Graphics system name, if available
+  auto graphics_system = emulator()->graphics_system();
+  if (graphics_system) {
+    auto graphics_name = graphics_system->name();
+    if (!graphics_name.empty()) {
+      sb.Append(" <");
+      sb.Append(graphics_name);
+      sb.Append(">");
+    }
+  }
+
+  if (Clock::guest_time_scalar() != 1.0) {
+    sb.AppendFormat(" (@{:.2f}x)", Clock::guest_time_scalar());
+  }
+
+  if (initializing_shader_storage_) {
+    sb.Append(" (Preloading shaders\xe2\x80\xa6)");
+  }
+
+  patcher::Patcher* patcher = emulator()->patcher();
+  if (patcher && patcher->IsAnyPatchApplied()) {
+    sb.Append(" [Patches Applied]");
+  }
+
+  patcher::PluginLoader* pluginloader = emulator()->plugin_loader();
+  if (pluginloader && pluginloader->IsAnyPluginLoaded()) {
+    sb.Append(" [Plugins Loaded]");
+  }
+
+  window_->SetTitle(sb.to_string_view());
+}
+
+void EmulatorWindow::SetInitializingShaderStorage(bool initializing) {
+  if (initializing_shader_storage_ == initializing) {
+    return;
+  }
+  initializing_shader_storage_ = initializing;
+  UpdateTitle();
+}
+
+// Notes:
+// SDL and XInput both support the guide button
+//
+// Assumes titles do not use the guide button.
+// For titles that do such as dashboards these titles could be excluded based on
+// their title ID.
+//
+// Xbox Gamebar:
+// If the Xbox Gamebar overlay is enabled Windows will consume the guide
+// button's input, this can be seen using hid-demo.
+//
+// Workaround: Detect if the Xbox Gamebar overlay is enabled then use the BACK
+// button instead of the GUIDE button. Therefore BACK and GUIDE are reserved
+// buttons for hotkeys.
+//
+// This is not an issue with DualShock controllers because Windows will not
+// open the gamebar overlay using the PlayStation menu button.
+//
+// Xbox One S Controller:
+// The guide button on this controller is very buggy no idea why.
+// Using xinput usually registers after a double tap.
+// Doesn't work at all using SDL.
+// Needs more testing.
+//
+// Steam:
+// If guide button focus is enabled steam will open.
+// Steam uses BACK + GUIDE to open an On-Screen keyboard, however this is not a
+// problem since both these buttons are reserved.
+constexpr int kSelectGuideComboMask =
+    X_INPUT_GAMEPAD_A | X_INPUT_GAMEPAD_B | X_INPUT_GAMEPAD_X |
+    X_INPUT_GAMEPAD_Y | X_INPUT_GAMEPAD_RIGHT_SHOULDER |
+    X_INPUT_GAMEPAD_LEFT_SHOULDER | X_INPUT_GAMEPAD_DPAD_UP |
+    X_INPUT_GAMEPAD_DPAD_DOWN | X_INPUT_GAMEPAD_DPAD_RIGHT;
+
+const std::map<int, EmulatorWindow::ControllerHotKey> controller_hotkey_map = {
+    // Must use the Guide Button for all pass through hotkeys
+    {X_INPUT_GAMEPAD_A | X_INPUT_GAMEPAD_GUIDE,
+     EmulatorWindow::ControllerHotKey(
+         EmulatorWindow::ButtonFunctions::ReadbackResolve,
+         "A + Guide = Cycle Readback Resolve", true)},
+    {X_INPUT_GAMEPAD_B | X_INPUT_GAMEPAD_GUIDE,
+     EmulatorWindow::ControllerHotKey(
+         EmulatorWindow::ButtonFunctions::ToggleLogging,
+         "B + Guide = Toggle between loglevel set in config and the 'Disabled' "
+         "loglevel.",
+         true, true)},
+    {X_INPUT_GAMEPAD_Y | X_INPUT_GAMEPAD_GUIDE,
+     EmulatorWindow::ControllerHotKey(
+         EmulatorWindow::ButtonFunctions::ToggleFullscreen,
+         "Y + Guide = Toggle Fullscreen", true)},
+    {X_INPUT_GAMEPAD_X | X_INPUT_GAMEPAD_GUIDE,
+     EmulatorWindow::ControllerHotKey(
+         EmulatorWindow::ButtonFunctions::ClearMemoryPageState,
+         "X + Guide = Toggle Clear Memory Page State", true)},
+
+    {X_INPUT_GAMEPAD_RIGHT_SHOULDER | X_INPUT_GAMEPAD_GUIDE,
+     EmulatorWindow::ControllerHotKey(
+         EmulatorWindow::ButtonFunctions::ClearGPUCache,
+         "Right Shoulder + Guide = Clear GPU Cache", true)},
+    {X_INPUT_GAMEPAD_LEFT_SHOULDER | X_INPUT_GAMEPAD_GUIDE,
+     EmulatorWindow::ControllerHotKey(
+         EmulatorWindow::ButtonFunctions::ToggleControllerVibration,
+         "Left Shoulder + Guide = Toggle Controller Vibration", true)},
+
+    // CPU Time Scalar with no rumble feedback
+    {X_INPUT_GAMEPAD_DPAD_DOWN | X_INPUT_GAMEPAD_GUIDE,
+     EmulatorWindow::ControllerHotKey(
+         EmulatorWindow::ButtonFunctions::CpuTimeScalarSetHalf,
+         "D-PAD Down + Guide = Half CPU Scalar")},
+    {X_INPUT_GAMEPAD_DPAD_UP | X_INPUT_GAMEPAD_GUIDE,
+     EmulatorWindow::ControllerHotKey(
+         EmulatorWindow::ButtonFunctions::CpuTimeScalarSetDouble,
+         "D-PAD Up + Guide = Double CPU Scalar")},
+    {X_INPUT_GAMEPAD_DPAD_RIGHT | X_INPUT_GAMEPAD_GUIDE,
+     EmulatorWindow::ControllerHotKey(
+         EmulatorWindow::ButtonFunctions::CpuTimeScalarReset,
+         "D-PAD Right + Guide = Reset CPU Scalar")},
+
+    // non-pass through hotkeys
+    {X_INPUT_GAMEPAD_Y, EmulatorWindow::ControllerHotKey(
+                            EmulatorWindow::ButtonFunctions::ToggleFullscreen,
+                            "Y = Toggle Fullscreen", true, false)},
+    {X_INPUT_GAMEPAD_START, EmulatorWindow::ControllerHotKey(
+                                EmulatorWindow::ButtonFunctions::RunTitle,
+                                "Start = Run Selected Title", false, false)},
+    {X_INPUT_GAMEPAD_BACK | X_INPUT_GAMEPAD_START,
+     EmulatorWindow::ControllerHotKey(
+         EmulatorWindow::ButtonFunctions::ToggleLogging,
+         "Back + Start = Toggle between loglevel set in config and the "
+         "'Disabled' loglevel.",
+         false, false)},
+    {X_INPUT_GAMEPAD_DPAD_DOWN,
+     EmulatorWindow::ControllerHotKey(
+         EmulatorWindow::ButtonFunctions::IncTitleSelect,
+         "D-PAD Down = Title Selection +1", true, false)},
+    {X_INPUT_GAMEPAD_DPAD_UP,
+     EmulatorWindow::ControllerHotKey(
+         EmulatorWindow::ButtonFunctions::DecTitleSelect,
+         "D-PAD Up = Title Selection -1", true, false)}};
+
+EmulatorWindow::ControllerHotKey EmulatorWindow::ProcessControllerHotkey(
+    int buttons) {
+#if XE_PLATFORM_WINRT
+  // Just crashes and gets in the way of WinRT's frontend
+  return {};
+#endif
+
+  // Default return value
+  EmulatorWindow::ControllerHotKey Unknown_hotkey = {};
+
+  if (buttons == 0) return Unknown_hotkey;
+
+  if (cvars::controller_hotkeys &&
+      (buttons & X_INPUT_GAMEPAD_BACK) &&
+      (buttons & kSelectGuideComboMask)) {
+    buttons = (buttons & ~X_INPUT_GAMEPAD_BACK) | X_INPUT_GAMEPAD_GUIDE;
+  }
+
+  // Hotkey cool-down to prevent toggling too fast
+  const std::chrono::milliseconds delay(75);
+
+  // If the Xbox Gamebar is enabled or the Guide button is disabled then
+  // replace the Guide button with the Back button without redeclaring the key
+  // mappings
+  if (IsUseNexusForGameBarEnabled() || !cvars::guide_button) {
+    if ((buttons & X_INPUT_GAMEPAD_BACK) == X_INPUT_GAMEPAD_BACK) {
+      buttons &= ~X_INPUT_GAMEPAD_BACK;
+      buttons |= X_INPUT_GAMEPAD_GUIDE;
+    }
+  }
+
+  auto it = controller_hotkey_map.find(buttons);
+  if (it == controller_hotkey_map.end()) {
+    return Unknown_hotkey;
+  }
+
+  // Do not activate hotkeys that are not intended for activation during
+  // gameplay
+  if (emulator_->is_title_open()) {
+    // If non-pass through (menu hoykeys) or hotkeys disabled then return
+    if (!it->second.title_passthru || !cvars::controller_hotkeys) {
+      return Unknown_hotkey;
+    }
+  }
+
+  EmulatorWindow::ControllerHotKey button_combination = it->second;
+
+  switch (button_combination.function) {
+    case ButtonFunctions::ToggleFullscreen:
+      app_context().CallInUIThread([this]() { ToggleFullscreen(); });
+
+      // Extra Sleep
+      xe::threading::Sleep(delay);
+      break;
+    case ButtonFunctions::RunTitle: {
+      if (selected_title_index == -1) selected_title_index++;
+
+      app_context().CallInUIThread([this]() {
+        RunTitle(recently_launched_titles_[selected_title_index].path_to_file);
+      });
+    } break;
+    case ButtonFunctions::ClearMemoryPageState:
+      ToggleGPUSetting(gpu::GPUSetting::ClearMemoryPageState);
+
+      // Assume the user wants ClearCaches as well
+      if (cvars::clear_memory_page_state) {
+        GpuClearCaches();
+      }
+
+      // Extra Sleep
+      xe::threading::Sleep(delay);
+      break;
+    case ButtonFunctions::ReadbackResolve:
+      CycleReadbackResolve();
+
+      // Extra Sleep
+      xe::threading::Sleep(delay);
+      break;
+    case ButtonFunctions::CpuTimeScalarSetHalf:
+      CpuTimeScalarSetHalf();
+      break;
+    case ButtonFunctions::CpuTimeScalarSetDouble:
+      CpuTimeScalarSetDouble();
+      break;
+    case ButtonFunctions::CpuTimeScalarReset:
+      CpuTimeScalarReset();
+      break;
+    case ButtonFunctions::ClearGPUCache:
+      GpuClearCaches();
+
+      // Extra Sleep
+      xe::threading::Sleep(delay);
+      break;
+    case ButtonFunctions::ToggleControllerVibration:
+      ToggleControllerVibration();
+
+      // Extra Sleep
+      xe::threading::Sleep(delay);
+      break;
+    case ButtonFunctions::IncTitleSelect:
+      selected_title_index++;
+      break;
+    case ButtonFunctions::DecTitleSelect:
+      selected_title_index--;
+      break;
+    case ButtonFunctions::ToggleLogging:
+      logging::ToggleLogLevel();
+      break;
+    case ButtonFunctions::Unknown:
+    default:
+      break;
+  }
+
+  if ((button_combination.function == ButtonFunctions::IncTitleSelect ||
+       button_combination.function == ButtonFunctions::DecTitleSelect) &&
+      recently_launched_titles_.size() > 0) {
+    selected_title_index = std::clamp(
+        selected_title_index, 0, (int)recently_launched_titles_.size() - 1);
+
+    // Must clear dialogs to prevent stacking
+    imgui_drawer_.get()->ClearDialogs();
+
+    // Titles may contain Unicode characters such as At World�s End
+    // Must use ImGUI font that can render these Unicode characters
+    std::string title_name;
+
+    // Use filename if title name is empty
+    if (recently_launched_titles_[selected_title_index].title_name.empty()) {
+      title_name = recently_launched_titles_[selected_title_index]
+                       .path_to_file.filename()
+                       .string();
+    } else {
+      title_name = recently_launched_titles_[selected_title_index].title_name;
+    }
+
+    std::string title = fmt::format(
+        "{}: {}\n\n{}", selected_title_index + 1, title_name,
+        controller_hotkey_map.find(X_INPUT_GAMEPAD_START)->second.pretty);
+
+    xe::ui::ImGuiDialog::ShowMessageBox(imgui_drawer_.get(), "Title Selection",
+                                        title);
+  }
+
+  xe::threading::Sleep(delay);
+
+  return it->second;
+}
+
+void EmulatorWindow::VibrateController(xe::hid::InputSystem* input_sys,
+                                       uint32_t user_index,
+                                       bool toggle_rumble) {
+  const std::chrono::milliseconds rumble_duration(100);
+
+  // Hold lock while sleeping this thread for the duration of the rumble,
+  // otherwise the rumble may fail.
+  auto input_lock = input_sys->lock();
+
+  X_INPUT_VIBRATION vibration = {};
+
+  vibration.left_motor_speed = toggle_rumble ? UINT16_MAX : 0;
+  vibration.right_motor_speed = toggle_rumble ? UINT16_MAX : 0;
+
+  input_sys->SetState(user_index, &vibration);
+
+  // Vibration duration
+  if (toggle_rumble) {
+    xe::threading::Sleep(rumble_duration);
+  }
+}
+
+void EmulatorWindow::GamepadHotKeys() {
+  X_INPUT_STATE state;
+
+  const std::chrono::milliseconds thread_delay(75);
+
+  auto input_sys = emulator_->input_system();
+
+  if (input_sys) {
+    while (true) {
+      auto input_lock = input_sys->lock();
+
+      for (uint32_t user_index = 0; user_index < XUserMaxUserCount;
+           ++user_index) {
+        X_RESULT result = input_sys->GetState(user_index, 0, &state);
+
+        // Release the lock before processing the hotkey
+        input_lock.mutex()->unlock();
+
+        // Check if the controller is connected
+        if (result == X_ERROR_SUCCESS) {
+          if (ProcessControllerHotkey(state.gamepad.buttons).rumble) {
+            // Enable Vibration
+            VibrateController(input_sys, user_index, true);
+
+            // Disable Vibration
+            VibrateController(input_sys, user_index, false);
+          }
+        }
+      }
+
+      xe::threading::Sleep(thread_delay);
+    }
+  }
+}
+
+void EmulatorWindow::ToggleGPUSetting(gpu::GPUSetting value) {
+  switch (value) {
+    case gpu::GPUSetting::ClearMemoryPageState:
+      gpu::SaveGPUSetting(gpu::GPUSetting::ClearMemoryPageState,
+                          !cvars::clear_memory_page_state);
+      break;
+    case gpu::GPUSetting::ReadbackMemexport:
+      gpu::SaveGPUSetting(gpu::GPUSetting::ReadbackMemexport,
+                          !cvars::readback_memexport);
+      break;
+  }
+}
+
+void EmulatorWindow::CycleReadbackResolve() {
+  const std::string& mode = cvars::readback_resolve;
+  if (mode == "none") {
+    gpu::SetReadbackResolveMode("fast");
+  } else if (mode == "fast") {
+    gpu::SetReadbackResolveMode("full");
+  } else {
+    gpu::SetReadbackResolveMode("none");
+  }
+}
+
+// Determine if the Xbox Gamebar is enabled via the Windows registry
+bool EmulatorWindow::IsUseNexusForGameBarEnabled() {
+#ifdef _WIN32
+  const LPCWSTR reg_path = L"SOFTWARE\\Microsoft\\GameBar";
+  const LPCWSTR key = L"UseNexusForGameBarEnabled";
+
+  DWORD value = 0;
+  DWORD dataSize = sizeof(value);
+
+  RegGetValue(HKEY_CURRENT_USER, reg_path, key, RRF_RT_DWORD, nullptr, &value,
+              &dataSize);
+
+  return (bool)value;
+#else
+  return false;
+#endif
+}
+
+void EmulatorWindow::DisplayHotKeysConfig() {
+  std::string msg = "";
+  std::string msg_passthru = "";
+
+  bool guide_enabled = !IsUseNexusForGameBarEnabled() && cvars::guide_button;
+
+  for (auto const& [key, val] : controller_hotkey_map) {
+    std::string pretty_text = val.pretty;
+
+    if (!guide_enabled) {
+      pretty_text = std::regex_replace(
+          pretty_text,
+          std::regex("Guide", std::regex_constants::syntax_option_type::icase),
+          "Back");
+    }
+
+    if (emulator_->is_title_open() && !val.title_passthru) {
+      pretty_text += " (Disabled)";
+    }
+
+    if (val.title_passthru && !cvars::controller_hotkeys) {
+      pretty_text += " (Disabled)";
+    }
+
+    if (val.title_passthru) {
+      msg += pretty_text + "\n";
+    } else {
+      msg_passthru += pretty_text + "\n";
+    }
+  }
+
+  // Add Title
+  msg.insert(0, "Gameplay Hotkeys\n");
+
+  // Prepend non-passthru hotkeys
+  msg_passthru += "\n";
+  msg.insert(0, msg_passthru);
+  msg += "\n";
+
+  msg += "Readback Resolve: " +
+         cvars::readback_resolve;
+  msg += "\n";
+
+  msg += "Clear Memory Page State: " +
+         xe::string_util::BoolToString(cvars::clear_memory_page_state);
+  msg += "\n";
+
+  msg += "Controller Hotkeys: " +
+         xe::string_util::BoolToString(cvars::controller_hotkeys);
+
+  imgui_drawer_.get()->ClearDialogs();
+  xe::ui::ImGuiDialog::ShowMessageBox(imgui_drawer_.get(), "Controller Hotkeys",
+                                      msg);
+}
+
+std::string EmulatorWindow::CanonicalizeFileExtension(
+    const std::filesystem::path& path) {
+  return xe::utf8::lower_ascii(xe::path_to_utf8(path.extension()));
+}
+
+xe::X_STATUS EmulatorWindow::RunTitle(const std::filesystem::path& path_to_file) {
+  bool titleExists = !std::filesystem::exists(path_to_file);
+
+  if (path_to_file.empty() || titleExists) {
+    const char* log_msg = path_to_file.empty()
+                              ? "Failed to launch title path is empty."
+                              : "Failed to launch title path is invalid.";
+
+    XELOGE(log_msg);
+
+    imgui_drawer_.get()->ClearDialogs();
+
+    xe::ui::ImGuiDialog::ShowMessageBox(imgui_drawer_.get(),
+                                        "Title Launch Failed!", log_msg);
+
+    return X_STATUS_NO_SUCH_FILE;
+  }
+
+  if (emulator_->is_title_open()) {
+    // Terminate the current title and start a new title.
+    // if (emulator_->TerminateTitle() == X_STATUS_SUCCESS) {
+    //   return RunTitle(path);
+    // }
+
+    return X_STATUS_UNSUCCESSFUL;
+  }
+
+  // Prevent crashing the emulator by not loading a game if a game is already
+  // loaded.
+  auto abs_path = std::filesystem::absolute(path_to_file);
+
+  auto extension = CanonicalizeFileExtension(abs_path);
+
+  if (extension == ".7z" || extension == ".zip" || extension == ".rar" ||
+      extension == ".tar" || extension == ".gz") {
+    xe::ShowSimpleMessageBox(
+        xe::SimpleMessageBoxType::Error,
+        fmt::format(
+            "Unsupported format!\n"
+            "Xenia does not support running software in an archived format."));
+
+    return X_STATUS_UNSUCCESSFUL;
+  }
+
+  // Tried dispatching LaunchPath to a background thread here so the UI
+  // could keep rendering a live progress overlay during a blocking shader
+  // cache preload (see Preload Shader Cache) instead of freezing - reverted
+  // after finding that Emulator::CompleteLaunch (where the actual blocking
+  // wait happens) unconditionally re-dispatches itself onto the UI thread
+  // via CallInUIThreadSynchronous if it's not already running there (it
+  // touches the window icon and game config UI callbacks). So the freeze
+  // happens on the UI thread no matter which thread calls LaunchPath -
+  // there's no way to keep the frontend animating during it without a
+  // deeper, riskier change to that guard itself, which isn't safe to do
+  // blind without real hardware to test a title launch against.
+  auto result = emulator_->LaunchPath(abs_path);
+
+  disable_hotkeys_ = false;
+
+  ClearDialogs();
+
+  if (result) {
+    XELOGE("Failed to launch target: {:08X}", result);
+
+    xe::ui::ImGuiDialog::ShowMessageBox(
+        imgui_drawer_.get(), "Title Launch Failed!",
+        "Failed to launch title.\n\nCheck xenia.log for technical details.");
+  } else if (const std::set<uint32_t> kVulkanRequiredTitleIds = {
+                 0x5451085D,  // WWE SmackDown vs. Raw 2011: hangs the D3D12
+                              // backend under sustained memexport draw load;
+                              // confirmed via direct testing on this port.
+                 // The rest below are community-reported gpu="vulkan" fixes
+                 // pulled from the compatibility ledger (best-effort text
+                 // extracted from xenia-canary/game-compatibility tracker
+                 // discussions - not independently re-verified on this
+                 // port). The underlying D3D12 issue isn't necessarily a
+                 // hang like SVR11's, but Vulkan is the only known fix for
+                 // it, and Vulkan doesn't exist on Xbox, so these are
+                 // blocked the same way. Update docs/compatibility/
+                 // KNOWN_ISSUES.md when adding to this list.
+                 0x545407F2,  // Grand Theft Auto IV
+                 0x534307E7,  // Just Cause 2
+                 0x545407E6,  // Mafia II
+                 0x4B4E085C,  // Metal Gear Solid V: Ground Zeroes
+                 0x58411202,  // Sonic Adventure 2
+                 0x58410B5D,  // Burnout CRASH!
+                 0x45410891,  // EA SPORTS Grand Slam Tennis 2
+                 0x535107E4,  // Final Fantasy XIII
+                 0x4D5307FA,  // Lost Odyssey
+                 0x584108B3,  // Rez HD
+                 0x45410852,  // The Lord of the Rings: Conquest
+                 0x45410811,  // UEFA Champions League 2006-2007
+                 0x5451080B,  // WWE SmackDown vs. Raw 2008
+             };
+             kVulkanRequiredTitleIds.count(emulator_->title_id())) {
+    // Terminate now, before the guest reaches whatever draw pattern
+    // actually hangs or corrupts rendering, rather than letting the user
+    // sit through it with no explanation.
+    emulator_->TerminateTitle();
+    xe::ui::ImGuiDialog::ShowMessageBox(
+        imgui_drawer_.get(), "Title Cannot Run on Xbox",
+        "This title needs the Vulkan graphics backend to run correctly, "
+        "which requires a Vulkan driver that does not exist on Xbox "
+        "hardware at all (D3D12 is the only backend the console supports). "
+        "This title cannot currently run on this port.");
+  } else {
+    AddRecentlyLaunchedTitle(path_to_file, std::string(emulator_->title_name()));
+
+    auto xam =
+        emulator_->kernel_state()->GetKernelModule<kernel::xam::XamModule>(
+            "xam.xex");
+
+    xam->loader_data().host_path = xe::path_to_utf8(abs_path);
+  }
+
+  return result;
+}
+
+void EmulatorWindow::RunPreviouslyPlayedTitle() {
+  if (recently_launched_titles_.size() >= 1) {
+    RunTitle(recently_launched_titles_[0].path_to_file);
+  }
+}
+
+void EmulatorWindow::FillRecentlyLaunchedTitlesMenu(
+    xe::ui::MenuItem* recent_menu) {
+#if !XE_PLATFORM_WINRT
+  for (int i = 0; i < recently_launched_titles_.size(); ++i) {
+    std::string hotkey = (i == 0) ? "F9" : "";
+
+    const RecentTitleEntry& entry = recently_launched_titles_[i];
+    const std::string item_text = entry.title_name.empty()
+                                      ? entry.path_to_file.string()
+                                      : entry.title_name;
+
+    recent_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, item_text, hotkey,
+        std::bind(&EmulatorWindow::RunTitle, this, entry.path_to_file)));
+  }
+#endif
+}
+
+void EmulatorWindow::LoadRecentlyLaunchedTitles() {
+  std::ifstream file(emulator()->storage_root() /
+                     kRecentlyPlayedTitlesFilename);
+  if (!file.is_open()) {
+    return;
+  }
+
+  toml::parse_result parsed_file;
+  try {
+    parsed_file = ParseFile(emulator()->storage_root() /
+                            kRecentlyPlayedTitlesFilename);
+  } catch (toml::parse_error& exception) {
+    XELOGE("Cannot parse file: recent.toml. Error: {}", exception.what());
+    return;
+  }
+
+  for (const auto& [index, entry] : parsed_file) {
+      if (!entry.is_table()) {
+        continue;
+      }
+
+      const toml::table* entry_table = entry.as_table();
+      if (!entry_table) {
+        continue;
+      }
+
+      const auto title_name = entry_table->get_as<std::string>("title_name");
+      const auto path = entry_table->get_as<std::string>("path");
+      const auto last_run_time = entry_table->get_as<int64_t>("last_run_time");
+
+      if (!title_name || !path || !last_run_time) {
+        continue;
+      }
+
+      std::error_code ec = {};
+      if (path->get().empty() || !std::filesystem::exists(path->get(), ec)) {
+        continue;
+      }
+
+      recently_launched_titles_.push_back(
+          {title_name->get(), path->get(), std::time_t(last_run_time->get())});
+  }
+}
+
+void EmulatorWindow::AddRecentlyLaunchedTitle(
+    std::filesystem::path path_to_file, std::string title_name) {
+  if (cvars::recent_titles_entry_amount <= 0) {
+    return;
+  }
+
+  // Check if game is already on list and pop it to front
+  auto entry_index =
+      std::ranges::find_if(std::as_const(recently_launched_titles_),
+                           [&title_name](const RecentTitleEntry& entry) {
+                             return entry.title_name == title_name;
+                           });
+  if (entry_index != recently_launched_titles_.cend()) {
+    recently_launched_titles_.erase(entry_index);
+  }
+
+  recently_launched_titles_.insert(recently_launched_titles_.cbegin(),
+                                   {title_name, path_to_file, time(nullptr)});
+  // Serialize to toml
+  toml::table toml_table;
+
+  uint8_t index = 0;
+  for (const RecentTitleEntry& entry : recently_launched_titles_) {
+    toml::table entry_table;
+
+    // Fill entry under specific index.
+    std::string str_path = xe::path_to_utf8(entry.path_to_file);
+    entry_table.insert("title_name", entry.title_name);
+    entry_table.insert("path", str_path);
+    entry_table.insert("last_run_time",
+                       static_cast<int64_t>(entry.last_run_time));
+
+    toml_table.insert(std::to_string(index++), std::move(entry_table));
+
+    if (index >= cvars::recent_titles_entry_amount) {
+      break;
+    }
+  }
+
+  // Open and write serialized data.
+  std::ofstream file(emulator()->storage_root() / kRecentlyPlayedTitlesFilename,
+                     std::ofstream::trunc);
+  file << toml_table;
+  file.close();
+}
+
+#if XE_PLATFORM_WINRT
+bool EmulatorWindow::WinRTFrontendDialog::EnablePatchesForTitle(
+    const std::filesystem::path& patches_dir,
+    const std::string& title_id) {
+  std::error_code ec;
+  if (!std::filesystem::exists(patches_dir, ec)) {
+    return false;
+  }
+
+  bool any_enabled = false;
+  std::string normalized_title = title_id;
+  for (char& c : normalized_title) {
+    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  }
+
+  for (const auto& entry : std::filesystem::directory_iterator(patches_dir, ec)) {
+    if (ec || !entry.is_regular_file()) {
+      continue;
+    }
+
+    const auto filename = entry.path().filename().string();
+    if (filename.size() < 8) {
+      continue;
+    }
+    std::string file_title = filename.substr(0, 8);
+    for (char& c : file_title) {
+      c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    if (_strnicmp(file_title.c_str(), normalized_title.c_str(), 8) != 0) {
+      continue;
+    }
+
+    try {
+      auto table = ParseFile(entry.path());
+      auto patch_array = table.get_as<toml::array>("patch");
+      if (!patch_array) {
+        continue;
+      }
+
+      bool modified = false;
+      for (auto& patch_node : *patch_array) {
+        auto* patch_table = patch_node.as_table();
+        if (!patch_table) {
+          continue;
+        }
+        patch_table->erase("is_enabled");
+        patch_table->insert("is_enabled", true);
+        modified = true;
+      }
+
+      if (modified) {
+        std::ofstream ofs(entry.path(), std::ios::trunc | std::ios::binary);
+        ofs << table;
+        ofs.close();
+        any_enabled = true;
+      }
+    } catch (...) {
+      continue;
+    }
+  }
+
+  return any_enabled;
+}
+
+void EmulatorWindow::WinRTFrontendDialog::DrawNoProfilePrompt(ImGuiIO& io) {
+  static_cast<void>(io);
+  auto* emulator = emulator_window_.emulator();
+  if (!emulator || !emulator->kernel_state() ||
+      !emulator->kernel_state()->xam_state()) {
+    return;
+  }
+
+  auto* profile_manager =
+      emulator->kernel_state()->xam_state()->profile_manager();
+  if (!profile_manager) {
+    return;
+  }
+
+  const bool has_profiles = profile_manager->GetAccountCount() > 0;
+  if (has_profiles) {
+    no_profile_prompt_dismissed_ = false;
+    return;
+  }
+
+  if (no_profile_prompt_dismissed_ || imgui_drawer()->GetDialogCount() > 1) {
+    return;
+  }
+
+  no_profile_prompt_dismissed_ = true;
+  new NoProfileDialog(imgui_drawer(), &emulator_window_);
+}
+
+void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
+  static bool logged_first_draw = false;
+  if (!logged_first_draw) {
+    logged_first_draw = true;
+    XELOGI("WinRTFrontendDialog::OnDraw first frame reached.");
+  }
+
+  if (UWP::HasGamePath()) {
+    UWP::SelectGameFromWinRT(emulator_window_.emulator());
+    Close();
+  }
+
+  float display_scale = ((float)io.DisplaySize.x / 1920.0f);
+  const float frontend_width = io.DisplaySize.x * 0.92f;
+  const float frontend_height = io.DisplaySize.y * 0.88f;
+  ImGui::SetNextWindowSize(ImVec2(frontend_width, frontend_height));
+  ImGui::SetNextWindowPos(
+      ImVec2((io.DisplaySize.x - frontend_width) * 0.5f,
+             (io.DisplaySize.y - frontend_height) * 0.5f));
+
+  auto flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoTitleBar |
+               ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize;
+  if (imgui_drawer()->GetIgnoreInput()) {
+    flags = flags | ImGuiWindowFlags_NoInputs;
+  }
+
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.0f));
+  ImGui::PushStyleColor(ImGuiCol_NavWindowingHighlight,
+                        ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+  ImGui::PushStyleColor(ImGuiCol_NavWindowingDimBg,
+                        ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+  bool launch_after_draw = false;
+  std::string launch_path_after_draw;
+
+  if (ImGui::Begin("Frontend", nullptr, flags)) {
+    ImDrawList* frontend_draw_list = ImGui::GetWindowDrawList();
+    ImDrawListSplitter frontend_splitter;
+    frontend_splitter.Split(frontend_draw_list, 4);
+
+    // Channel 0: Static background (bottom layer)
+    // Channel 1: Dynamic game background (middle layer) 
+    // Channel 2: Interface overlay (top layer)
+    // Channel 3: UI elements
+    
+    // Always draw background as base layer (bottom layer)
+    frontend_splitter.SetCurrentChannel(frontend_draw_list, 0);
+    if (auto fallback_tex = GetOrCreateBackgroundFallback()) {
+      frontend_draw_list->PushClipRectFullScreen();
+      frontend_draw_list->AddImage(
+          reinterpret_cast<ImTextureID>(fallback_tex.get()), ImVec2(0, 0),
+          io.DisplaySize);
+      frontend_draw_list->PopClipRect();
+    }
+
+    // Tint the panel background with a color unique to the active blade -
+    // matching the real Xbox dashboard's per-blade background color (each
+    // blade tints its whole panel, not just its tab label). Drawn under the
+    // interface overlay graphic and all UI content, same as the real
+    // dashboard layers its blade color under the metallic rail artwork.
+    {
+      const ImU32 kBladeTintColors[4] = {
+          IM_COL32(20, 130, 20, 255),   // games - green
+          IM_COL32(20, 70, 150, 255),   // settings - blue
+          IM_COL32(150, 100, 10, 255),  // paths - amber
+          IM_COL32(120, 20, 120, 255),  // about - purple
+      };
+      constexpr float kBladeTintFadeInSeconds = 0.25f;
+      constexpr float kBladeTintMaxAlpha = 90.0f;
+      float seconds_since_switch = std::chrono::duration<float>(
+                                       std::chrono::steady_clock::now() -
+                                       last_page_switch_time_)
+                                       .count();
+      float tint_fade =
+          std::clamp(seconds_since_switch / kBladeTintFadeInSeconds, 0.0f,
+                    1.0f);
+      ImU32 tint = kBladeTintColors[static_cast<int>(active_frontend_page_)];
+      uint8_t tint_alpha =
+          static_cast<uint8_t>(kBladeTintMaxAlpha * tint_fade);
+      tint = (tint & 0x00FFFFFFu) | (static_cast<ImU32>(tint_alpha) << 24);
+      frontend_draw_list->PushClipRectFullScreen();
+      frontend_draw_list->AddRectFilled(ImVec2(0, 0), io.DisplaySize, tint);
+      frontend_draw_list->PopClipRect();
+    }
+
+    // Draw interface overlay on top if available (top layer)
+    frontend_splitter.SetCurrentChannel(frontend_draw_list, 2);
+    if (auto background_tex = GetOrCreateBackground()) {
+      frontend_draw_list->PushClipRectFullScreen();
+      frontend_draw_list->AddImage(
+          reinterpret_cast<ImTextureID>(background_tex.get()), ImVec2(0, 0),
+          io.DisplaySize);
+      frontend_draw_list->PopClipRect();
+    }
+    
+    frontend_splitter.SetCurrentChannel(frontend_draw_list, 3);
+
+    const int page_count = static_cast<int>(FrontendPage::kCount);
+    // Switching blades changes what the rest of this function draws for the
+    // *current* frontend page (game list / settings / paths / about), each
+    // of which owns its own per-page state (selected row, selected settings
+    // section, the per-game config editor, etc.). Any dialog/popup/editor
+    // open at the time (which was opened for whatever page was active then)
+    // would otherwise keep drawing itself against a frontend page that just
+    // changed out from under it - matches the same guard already used for
+    // B/Y elsewhere in this function.
+    const bool blade_switch_blocked =
+        ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) ||
+        show_game_context_menu_ || show_per_game_config_editor_ ||
+        show_action_status_;
+    if (!blade_switch_blocked &&
+        ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false)) {
+      int page_index = static_cast<int>(active_frontend_page_);
+      page_index = (page_index + page_count - 1) % page_count;
+      active_frontend_page_ = static_cast<FrontendPage>(page_index);
+      last_page_switch_time_ = std::chrono::steady_clock::now();
+      XELOGI("Frontend: LB -> page {}", page_index);
+    }
+    if (!blade_switch_blocked &&
+        ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false)) {
+      int page_index = static_cast<int>(active_frontend_page_);
+      page_index = (page_index + 1) % page_count;
+      active_frontend_page_ = static_cast<FrontendPage>(page_index);
+      last_page_switch_time_ = std::chrono::steady_clock::now();
+      XELOGI("Frontend: RB -> page {}", page_index);
+    }
+
+    auto draw_nav_button = [this, display_scale](const char* label,
+                                                 FrontendPage page) {
+      bool selected = active_frontend_page_ == page;
+      const ImVec4 accent_border = GetConfiguredUIAccentColor(0.75f);
+      ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0, 0, 0, 0));
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0, 0, 0, 0));
+      ImGui::PushStyleColor(ImGuiCol_Border, accent_border);
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+      ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
+      if (selected) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.72f, 0.92f, 0.72f, 1.0f));
+      }
+      bool changed = ImGui::Button(label, ImVec2(-1.0f, 56.0f * display_scale));
+      if (selected) {
+        ImGui::PopStyleColor();
+      }
+      ImGui::PopItemFlag();
+      ImGui::PopStyleColor(5);
+      ImGui::PopStyleVar();
+      if (changed) {
+        active_frontend_page_ = page;
+      }
+    };
+
+    auto draw_text_button = [display_scale](const char* id, const char* text,
+                                            ImVec2 size = ImVec2(0.0f, 0.0f),
+                                            ImU32 color = 0) {
+      const ImGuiStyle& style = ImGui::GetStyle();
+      if (size.x <= 0.0f && size.y <= 0.0f) {
+        const ImVec2 text_size = ImGui::CalcTextSize(text);
+        size = ImVec2(text_size.x + style.FramePadding.x * 2.0f,
+                      text_size.y + style.FramePadding.y * 2.0f);
+      }
+
+      std::string label = fmt::format("{}{}", text, id);
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                            ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                            ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+      ImGui::PushStyleColor(ImGuiCol_NavCursor,
+                            ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+      bool pressed = ImGui::Button(label.c_str(), size);
+      bool highlighted = ImGui::IsItemHovered() || ImGui::IsItemActive() ||
+                         ImGui::IsItemFocused();
+      ImGui::PopStyleColor(5);
+
+      ImVec2 rect_min = ImGui::GetItemRectMin();
+      ImVec2 rect_max = ImGui::GetItemRectMax();
+      ImVec2 text_size = ImGui::CalcTextSize(text);
+      ImVec2 text_pos(rect_min.x + (rect_max.x - rect_min.x - text_size.x) * 0.5f,
+                      rect_min.y + (rect_max.y - rect_min.y - text_size.y) * 0.5f);
+      if (highlighted) {
+        const ImVec4 button_border_color = GetConfiguredUIAccentColor(0.95f);
+        const float rounding = style.FrameRounding > 0.0f
+                                   ? style.FrameRounding
+                                   : 8.0f * display_scale;
+        const float border_thickness = std::max(1.5f, 2.0f * display_scale);
+        ImGui::GetWindowDrawList()->AddRect(
+            rect_min, rect_max, ImGui::GetColorU32(button_border_color),
+            rounding, 0, border_thickness);
+      }
+
+      ImU32 text_color = color ? color : IM_COL32(255, 255, 255, 255);
+      DrawTextWithConfiguredEffect(ImGui::GetWindowDrawList(), ImGui::GetFont(),
+                                   ImGui::GetFontSize(), text_pos, text_color,
+                                   text);
+      return pressed;
+    };
+
+    if (ImGui::BeginTable("##frontend_blade_layout", 3,
+                          ImGuiTableFlags_SizingStretchProp |
+                              ImGuiTableFlags_NoSavedSettings,
+                          ImGui::GetContentRegionAvail())) {
+      const float rail_width = std::max(100.0f, 118.0f * display_scale);
+      ImGui::TableSetupColumn("left", ImGuiTableColumnFlags_WidthFixed,
+                              rail_width);
+      ImGui::TableSetupColumn("main", ImGuiTableColumnFlags_WidthStretch);
+      ImGui::TableSetupColumn("right", ImGuiTableColumnFlags_WidthFixed,
+                              rail_width);
+
+      ImGui::TableNextColumn();
+      if (ImGui::BeginChild("##left_rail", ImVec2(0, 0), false,
+                            ImGuiWindowFlags_NoScrollbar)) {
+        draw_nav_button("##games_tab", FrontendPage::kGameList);
+        draw_nav_button("##settings_tab", FrontendPage::kSettings);
+      }
+      ImGui::EndChild();
+
+      ImGui::TableNextColumn();
+      ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
+      ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 8.0f * display_scale);
+      ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                          ImVec2(6.0f * display_scale, 6.0f * display_scale));
+      if (ImGui::BeginChild("##main_page", ImVec2(0, 0), false,
+                            ImGuiWindowFlags_NoScrollbar)) {
+
+      
+      bool game_list_tab_open = active_frontend_page_ == FrontendPage::kGameList;
+      bool settings_tab_open = active_frontend_page_ == FrontendPage::kSettings;
+      bool paths_tab_open = active_frontend_page_ == FrontendPage::kPaths;
+      bool about_tab_open = active_frontend_page_ == FrontendPage::kAbout;
+      static bool game_list_tab_was_open = false;
+      static bool settings_tab_was_open = false;
+      static bool paths_tab_was_open = false;
+      static bool about_tab_was_open = false;
+      static bool gamelist_focus_requested = false;
+      static bool gamelist_focus_selected_request = false;
+      static bool gamelist_window_focus_requested = false;
+      static int settings_selected_section = 0;
+      static bool settings_focus_requested = false;
+      static bool settings_focus_right_requested = false;
+      static bool settings_focus_on_right = false;
+      static bool paths_focus_requested = false;
+      static bool about_focus_requested = false;
+      static bool gamelist_x_was_down = false;
+      static bool gamelist_b_was_down = false;
+      static double gamelist_last_x_open_time = -1000.0;
+
+      if (settings_tab_open && !settings_tab_was_open) {
+        XELOGI("Settings: tab opened, section reset to 0");
+        settings_selected_section = 0;
+        settings_focus_requested = true;
+        settings_focus_right_requested = false;
+        settings_focus_on_right = false;
+      }
+      if (paths_tab_open && !paths_tab_was_open) {
+        paths_focus_requested = true;
+      }
+      if (about_tab_open && !about_tab_was_open) {
+        about_focus_requested = true;
+      }
+
+      const char* header_text = "Select a Game";
+      switch (active_frontend_page_) {
+        case FrontendPage::kGameList:
+          header_text = "Select a Game";
+          break;
+        case FrontendPage::kSettings:
+          header_text = "Make some Tweaks";
+          break;
+        case FrontendPage::kPaths:
+          header_text = "Choose your Path";
+          break;
+        case FrontendPage::kAbout:
+          header_text = "Get the Info";
+          break;
+        default:
+          header_text = "Select a Game";
+          break;
+      }
+
+      auto parse_title_id_from_filename = [](const std::string& name) {
+        if (name.size() < 8) {
+          return std::string();
+        }
+        std::string candidate = name.substr(0, 8);
+        for (char& c : candidate) {
+          unsigned char uc = static_cast<unsigned char>(c);
+          if (!std::isxdigit(uc)) {
+            return std::string();
+          }
+          c = static_cast<char>(std::toupper(uc));
+        }
+        return candidate;
+      };
+
+      auto escape_toml_string = [](const std::string& value) {
+        std::string escaped;
+        escaped.reserve(value.size() + 2);
+        for (char c : value) {
+          if (c == '\\' || c == '"') {
+            escaped.push_back('\\');
+          }
+          escaped.push_back(c);
+        }
+        return escaped;
+      };
+
+      auto quote_toml_string = [escape_toml_string](const std::string& value) {
+        return std::string("\"") + escape_toml_string(value) + "\"";
+      };
+
+      auto unquote_toml_string = [](const std::string& value) {
+        if (value.size() < 2 || value.front() != '"' || value.back() != '"') {
+          return value;
+        }
+        std::string out;
+        out.reserve(value.size());
+        bool escaped = false;
+        for (size_t i = 1; i + 1 < value.size(); ++i) {
+          char c = value[i];
+          if (escaped) {
+            out.push_back(c);
+            escaped = false;
+            continue;
+          }
+          if (c == '\\') {
+            escaped = true;
+            continue;
+          }
+          out.push_back(c);
+        }
+        return out;
+      };
+
+      auto per_game_value_type_for_cvar = [](cvar::IConfigVar* config_var) {
+        if (dynamic_cast<cvar::ConfigVar<bool>*>(config_var)) {
+          return PerGameConfigValueType::kBool;
+        }
+        if (dynamic_cast<cvar::ConfigVar<int32_t>*>(config_var) ||
+            dynamic_cast<cvar::ConfigVar<int>*>(config_var)) {
+          return PerGameConfigValueType::kInt;
+        }
+        if (dynamic_cast<cvar::ConfigVar<uint32_t>*>(config_var)) {
+          return PerGameConfigValueType::kUInt;
+        }
+        if (dynamic_cast<cvar::ConfigVar<uint64_t>*>(config_var)) {
+          return PerGameConfigValueType::kUInt64;
+        }
+        if (dynamic_cast<cvar::ConfigVar<double>*>(config_var)) {
+          return PerGameConfigValueType::kDouble;
+        }
+        if (dynamic_cast<cvar::ConfigVar<std::string>*>(config_var)) {
+          return PerGameConfigValueType::kString;
+        }
+        if (dynamic_cast<cvar::ConfigVar<std::filesystem::path>*>(config_var)) {
+          return PerGameConfigValueType::kPath;
+        }
+        return PerGameConfigValueType::kUnknown;
+      };
+
+      auto assign_known_enum_values = [](PerGameConfigOption* option) {
+        if (option->name == "postprocess_scaling_and_sharpening") {
+          option->enum_values = {"", "bilinear", "cas", "fsr"};
+        } else if (option->name == "postprocess_antialiasing") {
+          option->enum_values = {"", "fxaa", "fxaa_extreme"};
+        } else if (option->name == "render_target_path_d3d12") {
+          option->enum_values = {"", "rov", "rtv"};
+        } else if (option->name == "readback_resolve") {
+          option->enum_values = {"none", "fast", "full"};
+        } else if (option->name == "user_language") {
+          option->enum_values = {"1", "2", "3", "4", "5", "6",
+                                 "7", "8", "9", "10", "11", "12"};
+        }
+      };
+
+      auto find_per_game_option =
+          [this](const std::string& name) -> PerGameConfigOption* {
+        auto it =
+            std::find_if(per_game_config_options_.begin(),
+                         per_game_config_options_.end(),
+                         [&name](const PerGameConfigOption& option) {
+                           return option.name == name;
+                         });
+        return it == per_game_config_options_.end() ? nullptr : &(*it);
+      };
+
+      auto build_per_game_config_options =
+          [this, per_game_value_type_for_cvar, assign_known_enum_values]() {
+            per_game_config_options_.clear();
+            if (!cvar::ConfigVars) {
+              return;
+            }
+
+            for (const auto& item : *cvar::ConfigVars) {
+              auto* config_var = item.second;
+              if (config_var->name() == "d3d12_enable_tiled_shared_memory" ||
+                  config_var->name() == "draw_resolution_scale_x" ||
+                  config_var->name() == "draw_resolution_scale_y") {
+                continue;
+              }
+              PerGameConfigOption option;
+              option.name = config_var->name();
+              option.category = config_var->category();
+              option.description = config_var->description();
+              option.default_value = config_var->config_value();
+              option.value_type = per_game_value_type_for_cvar(config_var);
+              assign_known_enum_values(&option);
+              per_game_config_options_.push_back(std::move(option));
+            }
+
+            std::sort(
+                per_game_config_options_.begin(), per_game_config_options_.end(),
+                [](const PerGameConfigOption& a, const PerGameConfigOption& b) {
+                  if (a.category != b.category) {
+                    return a.category < b.category;
+                  }
+                  return a.name < b.name;
+                });
+          };
+
+      auto ensure_plugin_layout_for_title =
+          [quote_toml_string](const std::filesystem::path& title_plugin_root,
+                              const std::string& title_id,
+                              const std::string& title_name,
+                              std::string* out_error) {
+            auto set_error = [out_error](const std::string& message) {
+              if (out_error) {
+                *out_error = message;
+              }
+              return false;
+            };
+
+            std::error_code ec;
+            std::filesystem::create_directories(title_plugin_root, ec);
+            if (ec) {
+              return set_error("Could not create plugin install directory.");
+            }
+
+            const auto plugins_toml_path = title_plugin_root / "plugins.toml";
+            if (std::filesystem::exists(plugins_toml_path)) {
+              return true;
+            }
+
+            std::filesystem::path first_toml_path;
+            std::vector<std::filesystem::path> plugin_xex_files;
+            std::set<std::string> inferred_hashes;
+
+            auto infer_hashes_from_text = [&inferred_hashes](
+                                            const std::string& text) {
+              size_t i = 0;
+              while (i < text.size()) {
+                while (i < text.size() &&
+                       !std::isxdigit(static_cast<unsigned char>(text[i]))) {
+                  ++i;
+                }
+                size_t start = i;
+                while (i < text.size() &&
+                       std::isxdigit(static_cast<unsigned char>(text[i]))) {
+                  ++i;
+                }
+                if (i - start == 16) {
+                  std::string hash = text.substr(start, 16);
+                  std::transform(
+                      hash.begin(), hash.end(), hash.begin(),
+                      [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+                  inferred_hashes.insert(hash);
+                }
+              }
+            };
+
+            for (const auto& entry :
+                 std::filesystem::directory_iterator(title_plugin_root, ec)) {
+              if (ec) {
+                break;
+              }
+              if (!entry.is_regular_file()) {
+                continue;
+              }
+
+              std::filesystem::path file_path = entry.path();
+              std::string ext = file_path.extension().string();
+              std::transform(ext.begin(), ext.end(), ext.begin(),
+                             [](unsigned char c) {
+                               return static_cast<char>(std::tolower(c));
+                             });
+
+              if (ext == ".toml") {
+                if (first_toml_path.empty()) {
+                  first_toml_path = file_path;
+                }
+                continue;
+              }
+              if (ext == ".xex") {
+                plugin_xex_files.push_back(file_path);
+                infer_hashes_from_text(file_path.stem().string());
+                infer_hashes_from_text(file_path.filename().string());
+              }
+            }
+
+            if (!first_toml_path.empty()) {
+              std::filesystem::rename(first_toml_path, plugins_toml_path, ec);
+              if (ec) {
+                ec.clear();
+                std::filesystem::copy_file(
+                    first_toml_path, plugins_toml_path,
+                    std::filesystem::copy_options::overwrite_existing, ec);
+                if (ec) {
+                  return set_error(
+                      "Downloaded plugin config could not be written as plugins.toml.");
+                }
+                ec.clear();
+                std::filesystem::remove(first_toml_path, ec);
+              }
+              return true;
+            }
+
+            if (plugin_xex_files.empty()) {
+              return set_error(
+                  "Downloaded plugin files are missing plugin .xex payloads.");
+            }
+
+            if (inferred_hashes.empty()) {
+              return set_error(
+                  "Downloaded plugin files did not include a plugins.toml and no 16-digit module hash could be inferred from filenames.");
+            }
+
+            std::vector<std::string> hashes(inferred_hashes.begin(),
+                                            inferred_hashes.end());
+
+            std::ofstream toml_file(plugins_toml_path, std::ios::binary);
+            if (!toml_file.is_open()) {
+              return set_error("Failed to create plugins.toml.");
+            }
+
+            const std::string normalized_title_name =
+                title_name.empty() ? title_id : title_name;
+
+            toml_file << "title_name = "
+                      << quote_toml_string(normalized_title_name) << "\n";
+            toml_file << "title_id = " << quote_toml_string(title_id) << "\n\n";
+
+            for (const auto& plugin_path : plugin_xex_files) {
+              toml_file << "[[plugin]]\n";
+              toml_file << "name = "
+                        << quote_toml_string(plugin_path.stem().string()) << "\n";
+              toml_file << "file = "
+                        << quote_toml_string(plugin_path.filename().string())
+                        << "\n";
+              toml_file << "desc = "
+                        << quote_toml_string("Auto-generated plugin entry")
+                        << "\n";
+              toml_file << "is_enabled = true\n";
+              if (hashes.size() == 1) {
+                toml_file << "hash = " << quote_toml_string(hashes.front())
+                          << "\n\n";
+              } else {
+                toml_file << "hash = [";
+                for (size_t i = 0; i < hashes.size(); ++i) {
+                  if (i) {
+                    toml_file << ", ";
+                  }
+                  toml_file << quote_toml_string(hashes[i]);
+                }
+                toml_file << "]\n\n";
+              }
+            }
+
+            toml_file.flush();
+            return true;
+          };
+
+      auto has_existing_patch_for_title =
+          [](const std::filesystem::path& patches_dir,
+             const std::string& title_id) {
+            if (title_id.empty() || !std::filesystem::exists(patches_dir)) {
+              return false;
+            }
+
+            std::string normalized_title_id = title_id;
+            std::transform(
+                normalized_title_id.begin(), normalized_title_id.end(),
+                normalized_title_id.begin(),
+                [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+
+            for (const auto& entry :
+                 std::filesystem::directory_iterator(patches_dir)) {
+              if (!entry.is_regular_file()) {
+                continue;
+              }
+              std::string name = entry.path().filename().string();
+              std::transform(name.begin(), name.end(), name.begin(),
+                             [](unsigned char c) {
+                               return static_cast<char>(std::toupper(c));
+                             });
+              if (name.rfind(normalized_title_id, 0) == 0) {
+                return true;
+              }
+            }
+            return false;
+          };
+
+      auto open_manual_prompt =
+          [this](const std::filesystem::path& dest, ManualInstallKind kind,
+                 const std::string& title_id, const std::string& message) {
+            action_status_ = message;
+            switch (kind) {
+              case ManualInstallKind::kPatch:
+                action_popup_mode_ = ActionPopupMode::kManualPatchPrompt;
+                break;
+              case ManualInstallKind::kPlugin:
+                action_popup_mode_ = ActionPopupMode::kManualPluginPrompt;
+                break;
+              case ManualInstallKind::kConfig:
+                action_popup_mode_ = ActionPopupMode::kManualConfigPrompt;
+                break;
+              default:
+                action_popup_mode_ = ActionPopupMode::kInfo;
+                break;
+            }
+            pending_manual_kind_ = kind;
+            pending_manual_destination_ = dest;
+            pending_manual_title_id_ = title_id;
+            action_popup_should_close_ = false;
+            show_action_status_ = true;
+          };
+
+      auto apply_per_game_config = [this](const std::string& title_id,
+                                          const std::filesystem::path& path) {
+        if (title_id.empty()) {
+          return false;
+        }
+        if (!std::filesystem::exists(path)) {
+          return false;
+        }
+
+        try {
+          ParseFile(path);
+        } catch (const std::exception& e) {
+          return false;
+        } catch (...) {
+          return false;
+        }
+
+        config::LoadGameConfig(title_id);
+        emulator_window_.ApplyDisplayConfigForCvars();
+        return true;
+      };
+
+      auto begin_patch_download =
+          [this, open_manual_prompt](const std::string& title_id,
+                                     const std::filesystem::path& patches_root) {
+            const std::string patches_dir = patches_root.string();
+            UWP::DownloadPatchesForGame(
+                title_id, patches_dir,
+                [this, open_manual_prompt, title_id, patches_root](bool ok,
+                                                                   std::string msg) {
+                  if (ok) {
+                    bool enabled = EnablePatchesForTitle(patches_root, title_id);
+                    action_status_ = enabled
+                                          ? fmt::format(
+                                                "Downloaded and applied patches for {}.",
+                                                title_id)
+                                          : fmt::format(
+                                                "Downloaded patches for {}, but enabling failed.",
+                                                title_id);
+                    action_popup_mode_ = ActionPopupMode::kInfo;
+                    pending_manual_kind_ = ManualInstallKind::kPatch;
+                    pending_manual_destination_ = patches_root;
+                    pending_manual_title_id_ = title_id;
+                    action_popup_should_close_ = true;
+                    show_action_status_ = true;
+                  } else {
+                    open_manual_prompt(
+                        patches_root, ManualInstallKind::kPatch, title_id,
+                        "No matching patches were found online.\n"
+                        "Do you want to select a patch file manually?");
+                  }
+                });
+          };
+
+      auto begin_optimized_settings_download =
+          [this, open_manual_prompt, apply_per_game_config](
+              const std::string& title_id,
+              const std::filesystem::path& config_root) {
+            UWP::DownloadConfigForGame(
+                title_id, config_root.string(),
+                [this, open_manual_prompt, apply_per_game_config, title_id,
+                 config_root](bool ok, std::string msg) {
+                  const auto config_path =
+                      config_root / fmt::format("{}.config.toml", title_id);
+                  if (ok) {
+                    bool applied = apply_per_game_config(title_id, config_path);
+                    if (msg == "already_installed") {
+                      action_status_ = applied
+                                           ? fmt::format(
+                                                 "Optimized settings already installed and re-applied for {}.",
+                                                 title_id)
+                                           : fmt::format(
+                                                 "Optimized settings already installed for {}, but apply failed.",
+                                                 title_id);
+                    } else {
+                      action_status_ = applied
+                                           ? fmt::format(
+                                                 "Downloaded optimized settings and applied config for {}.",
+                                                 title_id)
+                                           : fmt::format(
+                                                 "Downloaded optimized settings for {}, but apply failed.",
+                                                 title_id);
+                    }
+                    action_popup_mode_ = ActionPopupMode::kInfo;
+                    pending_manual_kind_ = ManualInstallKind::kConfig;
+                    pending_manual_destination_ = config_root;
+                    pending_manual_title_id_ = title_id;
+                    action_popup_should_close_ = true;
+                    show_action_status_ = true;
+                  } else {
+                    if (msg == "not_found") {
+                      open_manual_prompt(
+                          config_root, ManualInstallKind::kConfig, title_id,
+                          "No optimized settings were found online for this title.\n"
+                          "Do you want to select a config manually?");
+                    } else {
+                      open_manual_prompt(
+                          config_root, ManualInstallKind::kConfig, title_id,
+                          "Failed to download optimized settings automatically.\n"
+                          "Do you want to select a config manually?");
+                    }
+                  }
+                });
+          };
+
+      auto canonicalize_per_game_value =
+          [quote_toml_string,
+           unquote_toml_string](const PerGameConfigOption& option,
+                                const std::string& raw_value) {
+            std::string value = raw_value;
+            if (option.value_type == PerGameConfigValueType::kBool) {
+              std::string lowered = value;
+              std::transform(
+                  lowered.begin(), lowered.end(), lowered.begin(),
+                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+              if (lowered == "1") {
+                lowered = "true";
+              }
+              if (lowered == "0") {
+                lowered = "false";
+              }
+              if (lowered != "true" && lowered != "false") {
+                lowered = "false";
+              }
+              return lowered;
+            }
+            if (option.value_type == PerGameConfigValueType::kString ||
+                option.value_type == PerGameConfigValueType::kPath) {
+              return quote_toml_string(unquote_toml_string(value));
+            }
+            return value;
+          };
+
+      auto default_per_game_value =
+          [canonicalize_per_game_value](const PerGameConfigOption& option) {
+            std::string value = option.default_value;
+            if (value.empty()) {
+              switch (option.value_type) {
+                case PerGameConfigValueType::kBool:
+                  value = "false";
+                  break;
+                case PerGameConfigValueType::kInt:
+                case PerGameConfigValueType::kUInt:
+                case PerGameConfigValueType::kUInt64:
+                  value = "0";
+                  break;
+                case PerGameConfigValueType::kDouble:
+                  value = "0.0";
+                  break;
+                case PerGameConfigValueType::kString:
+                case PerGameConfigValueType::kPath:
+                  value = "\"\"";
+                  break;
+                default:
+                  value = "\"\"";
+                  break;
+              }
+            }
+            return canonicalize_per_game_value(option, value);
+          };
+
+      auto add_or_update_per_game_entry =
+          [this, find_per_game_option, default_per_game_value,
+           canonicalize_per_game_value](const std::string& option_name,
+                                        const std::string& raw_value) {
+            auto* option = find_per_game_option(option_name);
+            std::string category = "General";
+            std::string value = raw_value;
+            if (option) {
+              category = option->category.empty() ? "General" : option->category;
+              if (value.empty()) {
+                value = default_per_game_value(*option);
+              } else {
+                value = canonicalize_per_game_value(*option, value);
+              }
+            }
+
+            auto existing_it = per_game_config_entries_.find(option_name);
+            if (existing_it != per_game_config_entries_.end() && category == "General" &&
+                !existing_it->second.category.empty()) {
+              category = existing_it->second.category;
+            }
+
+            per_game_config_entries_[option_name] = {category, value};
+          };
+
+      auto build_per_game_config_text = [this]() {
+        std::map<std::string, std::vector<std::pair<std::string, std::string>>>
+            grouped;
+        for (const auto& entry_pair : per_game_config_entries_) {
+          const auto& option_name = entry_pair.first;
+          const auto& entry = entry_pair.second;
+          std::string category = entry.category.empty() ? "General" : entry.category;
+          grouped[category].push_back({option_name, entry.value});
+        }
+
+        std::string out =
+            "# Per-game config overrides\n"
+            "# Generated by Game Menu editor.\n\n";
+        for (auto& category_pair : grouped) {
+          auto& entries = category_pair.second;
+          std::sort(entries.begin(), entries.end(),
+                    [](const auto& a, const auto& b) { return a.first < b.first; });
+          out += fmt::format("[{}]\n", category_pair.first);
+          for (const auto& entry : entries) {
+            out += fmt::format("{} = {}\n", entry.first, entry.second);
+          }
+          out += "\n";
+        }
+        return out;
+      };
+
+      auto open_per_game_config_editor =
+          [this, build_per_game_config_options, find_per_game_option,
+           quote_toml_string](const std::string& title_id,
+                              const std::filesystem::path& path,
+                              const std::string& initial_contents,
+                              const std::string& title_display) {
+            pending_per_game_config_title_id_ = title_id;
+            pending_per_game_config_path_ = path;
+            pending_per_game_config_title_display_ =
+                title_display.empty() ? title_id : title_display;
+            selected_per_game_config_option_.clear();
+            per_game_config_remove_mode_ = false;
+            per_game_config_focus_jump_request_ =
+                PerGameConfigFocusSide::kNone;
+            per_game_config_last_focused_control_id_.clear();
+            per_game_config_entries_.clear();
+
+            build_per_game_config_options();
+
+            if (std::filesystem::exists(path)) {
+              try {
+                auto table = ParseFile(path);
+                for (const auto& category_node : table) {
+                  const auto category_table = category_node.second.as_table();
+                  if (!category_table) {
+                    continue;
+                  }
+
+                  const std::string category(category_node.first);
+                  for (const auto& option_node : *category_table) {
+                    const std::string option_name(option_node.first);
+                    const auto& value_node = option_node.second;
+                    if (option_name == "d3d12_enable_tiled_shared_memory" ||
+                        option_name == "draw_resolution_scale_x" ||
+                        option_name == "draw_resolution_scale_y") {
+                      continue;
+                    }
+                    std::string value_string;
+
+                    if (auto bool_value = value_node.as_boolean()) {
+                      value_string = bool_value->get() ? "true" : "false";
+                    } else if (auto int_value = value_node.as_integer()) {
+                      value_string = fmt::format("{}", int_value->get());
+                    } else if (auto double_value = value_node.as_floating_point()) {
+                      value_string = fmt::format("{}", double_value->get());
+                    } else if (auto string_value = value_node.as_string()) {
+                      value_string = quote_toml_string(string_value->get());
+                    } else {
+                      continue;
+                    }
+
+                    per_game_config_entries_[option_name] =
+                        {category, value_string};
+                  }
+                }
+              } catch (const std::exception& e) {
+                (void)e;
+              } catch (...) {
+              }
+            }
+
+            for (const auto& entry : per_game_config_entries_) {
+              if (find_per_game_option(entry.first)) {
+                continue;
+              }
+              PerGameConfigOption unknown_option;
+              unknown_option.name = entry.first;
+              unknown_option.category = entry.second.category;
+              unknown_option.description =
+                  "Unknown or legacy option loaded from existing file.";
+              unknown_option.default_value = entry.second.value;
+              unknown_option.value_type = PerGameConfigValueType::kUnknown;
+              per_game_config_options_.push_back(std::move(unknown_option));
+            }
+
+            std::sort(
+                per_game_config_options_.begin(), per_game_config_options_.end(),
+                [](const PerGameConfigOption& a, const PerGameConfigOption& b) {
+                  if (a.category != b.category) {
+                    return a.category < b.category;
+                  }
+                  return a.name < b.name;
+                });
+
+            if (!per_game_config_options_.empty()) {
+              per_game_config_add_candidate_ = per_game_config_options_.front().name;
+            } else {
+              per_game_config_add_candidate_.clear();
+            }
+
+            if (!per_game_config_entries_.empty()) {
+              selected_per_game_config_option_ =
+                  per_game_config_entries_.begin()->first;
+            }
+
+            std::memset(per_game_config_buffer_, 0, sizeof(per_game_config_buffer_));
+            xe::string_util::copy_truncating(per_game_config_buffer_,
+                                             initial_contents,
+                                             sizeof(per_game_config_buffer_));
+            per_game_config_popup_focus_requested_ = true;
+            show_per_game_config_editor_ = true;
+          };
+
+      if (game_list_tab_open) {
+        const bool controller_x_down = ImGui::IsKeyDown(ImGuiKey_GamepadFaceLeft);
+        const bool controller_b_down = ImGui::IsKeyDown(ImGuiKey_GamepadFaceRight);
+        const bool controller_y_down = ImGui::IsKeyDown(ImGuiKey_GamepadFaceUp);
+        const bool controller_x_pressed = controller_x_down && !gamelist_x_was_down;
+        const bool controller_x_debounced =
+            controller_x_pressed &&
+            (ImGui::GetTime() - gamelist_last_x_open_time) > 0.20;
+        const bool controller_b_pressed = controller_b_down && !gamelist_b_was_down;
+        const bool controller_y_pressed =
+            controller_y_down && !search_gamepad_y_was_down_;
+
+        if (!game_list_tab_was_open) {
+          gamelist_focus_requested = true;
+          gamelist_focus_selected_request = true;
+          gamelist_window_focus_requested = true;
+        }
+
+        // Additional focus restoration if coming from another tab
+        if (game_list_tab_open && (settings_tab_was_open || paths_tab_was_open || about_tab_was_open)) {
+          gamelist_focus_requested = true;
+          gamelist_focus_selected_request = true;
+          gamelist_window_focus_requested = true;
+        }
+
+        const bool is_any_popup_open =
+            ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
+        // Kept in sync with blade_switch_blocked above - both exist to block
+        // gamepad shortcuts while a dialog/popup/editor is open.
+        const bool is_any_game_context_open =
+            is_any_popup_open || show_game_context_menu_ ||
+            show_per_game_config_editor_ || show_action_status_;
+
+        if (controller_b_pressed && !is_any_game_context_open) {
+          ImGui::SetWindowFocus("##gamelist_left");
+          gamelist_focus_selected_request = true;
+        }
+
+        if (controller_y_pressed && !is_any_game_context_open) {
+          show_search_panel_ = !show_search_panel_;
+          if (show_search_panel_) {
+            if (search_selected_game_path_.empty()) {
+              search_selected_game_path_ = selected_game_path_;
+            }
+            search_panel_focus_input_requested_ = true;
+            search_panel_list_focus_requested_ = false;
+            UWP::ShowKeyboard();
+          } else {
+            search_panel_focus_input_requested_ = false;
+            search_panel_list_focus_requested_ = false;
+            gamelist_window_focus_requested = true;
+            gamelist_focus_selected_request = true;
+            UWP::HideKeyboard();
+          }
+        }
+        search_gamepad_y_was_down_ = controller_y_down;
+
+        struct GameListRow {
+          std::string path;
+          std::string filename;
+          std::string title_id;
+          UWP::UnityGameMetadata metadata;
+          bool has_metadata = false;
+        };
+
+        std::vector<GameListRow> game_rows;
+        game_rows.reserve(UWP::GetGames().size());
+        for (const auto& set : UWP::GetGames()) {
+          GameListRow row;
+          std::tie(row.path, row.filename) = set;
+
+          auto cached_title_id = cached_game_title_ids_.find(row.path);
+          if (cached_title_id == cached_game_title_ids_.end()) {
+            std::string title_id = UWP::GetTitleIdFromPath(row.path);
+            cached_game_title_ids_.insert({row.path, title_id});
+            row.title_id = std::move(title_id);
+          } else {
+            row.title_id = cached_title_id->second;
+          }
+
+          if (!row.title_id.empty()) {
+            UWP::EnsureUnityMetadataFetch(row.title_id);
+            row.has_metadata =
+                UWP::TryGetUnityMetadata(row.title_id, &row.metadata);
+          }
+
+          game_rows.push_back(std::move(row));
+        }
+
+        auto get_game_display_title = [](const GameListRow& row) {
+          if (row.has_metadata && !row.metadata.display_name.empty()) {
+            return row.metadata.display_name;
+          }
+          return row.filename;
+        };
+
+        auto get_game_subtitle = [](const GameListRow& row,
+                                    const std::string& display_title) {
+          if (row.has_metadata && !row.metadata.publisher.empty()) {
+            return row.metadata.publisher;
+          }
+          std::string fallback = row.title_id.empty() ? row.filename : row.title_id;
+          if (fallback == display_title) {
+            fallback = row.filename;
+          }
+          return fallback;
+        };
+
+        auto get_gamelist_art_path = [](const GameListRow& row)
+            -> const std::string* {
+          if (!row.has_metadata) {
+            return nullptr;
+          }
+          const std::string* icon_path =
+              row.metadata.icon_path.empty() ? nullptr : &row.metadata.icon_path;
+          const std::string* boxart_path =
+              row.metadata.cover_path.empty() ? nullptr : &row.metadata.cover_path;
+          if (cvars::ui_prefer_icon_gamelist_art) {
+            if (icon_path) {
+              return icon_path;
+            }
+            return boxart_path;
+          }
+          if (boxart_path) {
+            return boxart_path;
+          }
+          return icon_path;
+        };
+
+        auto normalize_search_text = [](const std::string& value) {
+          return xe::utf8::lower_ascii(value);
+        };
+
+        auto build_top_loop_order = [](size_t item_count, size_t selected_index) {
+          std::vector<size_t> ordered_indices;
+          ordered_indices.reserve(item_count);
+          if (!item_count) {
+            return ordered_indices;
+          }
+          const size_t normalized_selected = item_count
+                                                 ? (selected_index % item_count)
+                                                 : 0;
+          for (size_t i = 0; i < item_count; ++i) {
+            ordered_indices.push_back(
+                (normalized_selected + i) % item_count);
+          }
+          return ordered_indices;
+        };
+
+        const GameListRow* selected_row = nullptr;
+        size_t selected_game_row_index = 0;
+        for (const auto& row : game_rows) {
+          if (row.path == selected_game_path_) {
+            selected_row = &row;
+            break;
+          }
+          ++selected_game_row_index;
+        }
+        auto focus_game_row_by_index =
+            [&](size_t new_index, bool request_focus) {
+              if (game_rows.empty()) {
+                return;
+              }
+              new_index %= game_rows.size();
+              selected_game_row_index = new_index;
+              selected_row = &game_rows[new_index];
+              selected_game_path_ = selected_row->path;
+              selected_game_name_ = selected_row->filename;
+              if (request_focus) {
+                gamelist_focus_selected_request = true;
+                gamelist_focus_requested = true;
+                gamelist_window_focus_requested = true;
+              }
+            };
+
+        if (!selected_row && !game_rows.empty()) {
+          focus_game_row_by_index(0, false);
+        }
+
+        ImVec2 main_page_min = ImGui::GetWindowPos();
+        ImVec2 main_page_max =
+            ImVec2(main_page_min.x + ImGui::GetWindowSize().x,
+                   main_page_min.y + ImGui::GetWindowSize().y);
+        if (selected_row && selected_row->has_metadata &&
+            !selected_row->metadata.background_path.empty()) {
+          // Check if dynamic game backgrounds are enabled
+          auto c_dynamic_bg = dynamic_cast<cvar::ConfigVar<bool>*>(
+              cvar::ConfigVars->find("ui_enable_dynamic_game_backgrounds")->second);
+          bool enable_dynamic_bg = c_dynamic_bg ? c_dynamic_bg->GetTypedConfigValue() : true;
+          
+          if (enable_dynamic_bg) {
+            auto bg_tex =
+                GetOrCreateImageTexture(selected_row->metadata.background_path);
+            if (bg_tex) {
+              frontend_splitter.SetCurrentChannel(frontend_draw_list, 1);
+              frontend_draw_list->PushClipRect(main_page_min, main_page_max, true);
+              frontend_draw_list->AddImage(
+                  reinterpret_cast<ImTextureID>(bg_tex.get()), main_page_min,
+                  main_page_max);
+              frontend_draw_list->PopClipRect();
+              frontend_splitter.SetCurrentChannel(frontend_draw_list, 3);
+            }
+          }
+        }
+
+        ImGui::Dummy(ImVec2(0.0f, 42.0f * display_scale));
+
+        bool request_open_game_context_menu = false;
+        bool request_launch_selected_game = false;
+        std::string launch_game_path;
+        const float gamelist_bottom_lift = 25.0f * display_scale;
+        float content_height = ImGui::GetContentRegionAvail().y - gamelist_bottom_lift;
+        if (content_height < 120.0f) {
+          content_height = 120.0f;
+        }
+
+        const float avail_width = ImGui::GetContentRegionAvail().x;
+        float left_panel_width = avail_width * 0.584f;
+
+        if (ImGui::BeginChild("##gamelist_left", ImVec2(left_panel_width, content_height),
+                              false, ImGuiWindowFlags_NoScrollbar)) {
+
+            if (gamelist_window_focus_requested && !show_search_panel_ &&
+                !search_panel_focus_input_requested_ &&
+                !search_panel_list_focus_requested_) {
+              ImGui::SetWindowFocus("##gamelist_left");
+              gamelist_window_focus_requested = false;
+            }
+
+            const float carousel_outer_padding = 14.0f * display_scale;
+            const float carousel_spacing = 16.0f * display_scale;
+            const float carousel_card_height = 126.0f * display_scale;
+            const float carousel_horizontal_offset = 30.0f * display_scale;
+            const std::vector<size_t> ordered_game_row_indices =
+                build_top_loop_order(game_rows.size(), selected_game_row_index);
+            ImGui::Dummy(ImVec2(0.0f, 10.0f * display_scale));
+
+            for (size_t ordered_index = 0;
+                 ordered_index < ordered_game_row_indices.size(); ++ordered_index) {
+              const auto& row = game_rows[ordered_game_row_indices[ordered_index]];
+              ImGui::PushID(row.path.c_str());
+              const bool is_selected = selected_game_path_ == row.path;
+              const float row_height = carousel_card_height;
+              const float side_inset = carousel_outer_padding;
+              const float card_width = std::max(
+                  160.0f * display_scale,
+                  ImGui::GetContentRegionAvail().x - side_inset * 2.0f -
+                      carousel_horizontal_offset);
+              const float row_start_x =
+                  ImGui::GetCursorPosX() + side_inset + carousel_horizontal_offset;
+              if (!is_any_game_context_open && is_selected) {
+                if (gamelist_focus_requested ||
+                    (!ImGui::IsAnyItemFocused() &&
+                     ImGui::IsWindowFocused(
+                         ImGuiFocusedFlags_RootAndChildWindows))) {
+                  ImGui::SetKeyboardFocusHere();
+                  gamelist_focus_requested = false;
+                }
+              }
+              if (!is_any_game_context_open && gamelist_focus_selected_request &&
+                  is_selected) {
+                ImGui::SetKeyboardFocusHere();
+                gamelist_focus_selected_request = false;
+              }
+              const ImGuiSelectableFlags row_selectable_flags =
+                  is_any_game_context_open ? ImGuiSelectableFlags_Disabled : 0;
+              ImGui::SetCursorPosX(row_start_x);
+              ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
+              ImGui::PushStyleColor(ImGuiCol_HeaderHovered,
+                                    ImVec4(0, 0, 0, 0));
+              ImGui::PushStyleColor(ImGuiCol_HeaderActive,
+                                    ImVec4(0, 0, 0, 0));
+              ImGui::PushStyleColor(ImGuiCol_NavCursor,
+                                    ImVec4(0, 0, 0, 0));
+              if (ImGui::Selectable("##game_row", is_selected,
+                                   row_selectable_flags,
+                                   ImVec2(card_width, row_height))) {
+                selected_game_path_ = row.path;
+                selected_game_name_ = row.filename;
+                gamelist_focus_selected_request = true;
+              }
+              ImGui::PopStyleColor(4);
+              const bool row_focused = ImGui::IsItemFocused();
+              if (!is_any_game_context_open && row_focused && !is_selected) {
+                selected_game_path_ = row.path;
+                selected_game_name_ = row.filename;
+              }
+              if (!is_any_game_context_open && row_focused) {
+                const bool nav_up =
+                    ImGui::IsKeyPressed(ImGuiKey_GamepadDpadUp, false) ||
+                    ImGui::IsKeyPressed(ImGuiKey_UpArrow, false);
+                const bool nav_down =
+                    ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown, false) ||
+                    ImGui::IsKeyPressed(ImGuiKey_DownArrow, false);
+                if (nav_up && game_rows.size() > 1) {
+                  size_t new_index =
+                      (selected_game_row_index + game_rows.size() - 1) %
+                      game_rows.size();
+                  focus_game_row_by_index(new_index, true);
+                } else if (nav_down && game_rows.size() > 1) {
+                  focus_game_row_by_index(selected_game_row_index + 1, true);
+                }
+              }
+              if (!is_any_game_context_open && is_selected) {
+                ImGui::SetItemDefaultFocus();
+              }
+
+              const ImVec2 item_min = ImGui::GetItemRectMin();
+              const ImVec2 item_max = ImGui::GetItemRectMax();
+              const float pad = 10.0f * display_scale;
+              const float art_size = carousel_card_height - pad * 2.0f;
+              const float image_x = item_min.x + pad;
+              const float image_y = item_min.y + std::max(0.0f, (row_height - art_size) * 0.5f);
+              const float text_area_min_x = image_x + art_size + pad * 2.2f;
+              const float text_area_max_x = item_max.x - pad;
+              const float text_area_width = std::max(0.0f, text_area_max_x - text_area_min_x);
+
+              const std::string* gamelist_image_path = get_gamelist_art_path(row);
+
+              if (gamelist_image_path) {
+                auto gamelist_tex = GetOrCreateImageTexture(*gamelist_image_path);
+                if (gamelist_tex) {
+                  ImGui::SetCursorScreenPos(
+                      ImVec2(image_x, image_y));
+                  ImGui::Image(reinterpret_cast<ImTextureID>(gamelist_tex.get()),
+                               ImVec2(art_size, art_size));
+                }
+              }
+
+              const std::string display_title = get_game_display_title(row);
+              const ImVec2 title_size = ImGui::CalcTextSize(display_title.c_str());
+              const std::string secondary_text = get_game_subtitle(row, display_title);
+              const ImVec2 secondary_size = secondary_text.empty()
+                                                ? ImVec2(0.0f, 0.0f)
+                                                : ImGui::CalcTextSize(secondary_text.c_str());
+              const float text_line_spacing = 10.0f * display_scale;
+              const float combined_text_height =
+                  title_size.y +
+                  (secondary_text.empty() ? 0.0f : (text_line_spacing + secondary_size.y));
+              const float title_y =
+                  item_min.y + std::max(0.0f, (row_height - combined_text_height) * 0.5f);
+              const float title_x = text_area_min_x;
+              DrawTextWithConfiguredEffect(
+                  ImGui::GetWindowDrawList(), ImGui::GetFont(),
+                  ImGui::GetFontSize(), ImVec2(title_x, title_y),
+                  IM_COL32(228, 228, 228, 255), display_title.c_str());
+
+              if (!secondary_text.empty()) {
+                const float secondary_x = text_area_min_x;
+                DrawTextWithConfiguredEffect(
+                    ImGui::GetWindowDrawList(), ImGui::GetFont(),
+                    ImGui::GetFontSize(),
+                    ImVec2(secondary_x, title_y + title_size.y + text_line_spacing),
+                    IM_COL32(153, 153, 153, 255), secondary_text.c_str());
+              }
+
+              if (!is_any_game_context_open && row_focused &&
+                  selected_game_path_ == row.path &&
+                  ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false)) {
+                request_launch_selected_game = true;
+                launch_game_path = row.path;
+              }
+
+              if (!is_any_game_context_open && row_focused &&
+                  ImGui::IsKeyPressed(ImGuiKey_F12, false)) {
+                selected_game_path_ = row.path;
+                selected_game_name_ = row.filename;
+                request_open_game_context_menu = true;
+              }
+              ImGui::PopID();
+              ImGui::Dummy(ImVec2(0.0f, carousel_spacing));
+            }
+          }
+        ImGui::EndChild();
+
+        if (!is_any_game_context_open && controller_x_debounced) {
+          if (selected_row) {
+            selected_game_path_ = selected_row->path;
+            selected_game_name_ = selected_row->filename;
+            request_open_game_context_menu = true;
+          }
+        }
+
+        ImGui::SameLine();
+
+        if (ImGui::BeginChild("##main_page", ImVec2(0, content_height), false,
+                              ImGuiWindowFlags_NoScrollbar)) {
+            if (selected_row) {
+              ImGui::Dummy(ImVec2(0.0f, 21.0f * display_scale));
+              std::string detail_title = selected_row->filename;
+              if (selected_row->has_metadata &&
+                  !selected_row->metadata.display_name.empty()) {
+                detail_title = selected_row->metadata.display_name;
+              }
+
+              const std::string* hero_image_path = nullptr;
+              if (selected_row->has_metadata) {
+                const auto& metadata = selected_row->metadata;
+                const std::string* banner_path =
+                    metadata.banner_path.empty() ? nullptr : &metadata.banner_path;
+                const std::string* gallery_path =
+                    metadata.gallery_paths.empty() ? nullptr : &metadata.gallery_paths.front();
+                auto select_hero_image = [&](bool prefer_banner)
+                    -> const std::string* {
+                  if (prefer_banner) {
+                    if (banner_path) {
+                      return banner_path;
+                    }
+                    if (gallery_path) {
+                      return gallery_path;
+                    }
+                  } else {
+                    if (gallery_path) {
+                      return gallery_path;
+                    }
+                    if (banner_path) {
+                      return banner_path;
+                    }
+                  }
+                  return nullptr;
+                };
+                hero_image_path = select_hero_image(cvars::ui_prefer_banner_hero_art);
+              }
+
+              if (hero_image_path) {
+                auto hero_tex = GetOrCreateImageTexture(*hero_image_path);
+                if (hero_tex) {
+                  const float avail_w = ImGui::GetContentRegionAvail().x - 42.0f * display_scale;
+                  const float aspect_ratio = static_cast<float>(hero_tex->width) / static_cast<float>(hero_tex->height);
+                  const float uniform_h = avail_w / aspect_ratio;
+                  ImGui::Image(reinterpret_cast<ImTextureID>(hero_tex.get()),
+                               ImVec2(avail_w, uniform_h), ImVec2(0,0), ImVec2(1,1));
+                }
+              }
+
+              if (cvars::ui_show_title_metadata) {
+                ImGui::TextWrapped("%s", detail_title.c_str());
+              }
+              
+              const std::string* detail_description = nullptr;
+              if (selected_row->has_metadata) {
+                const auto& metadata = selected_row->metadata;
+                const std::string* short_desc =
+                    metadata.description_short.empty() ? nullptr : &metadata.description_short;
+                const std::string* full_desc =
+                    metadata.description_full.empty() ? nullptr : &metadata.description_full;
+                auto select_description = [&](bool prefer_short)
+                    -> const std::string* {
+                  if (prefer_short) {
+                    if (short_desc) {
+                      return short_desc;
+                    }
+                    if (full_desc) {
+                      return full_desc;
+                    }
+                  } else {
+                    if (full_desc) {
+                      return full_desc;
+                    }
+                    if (short_desc) {
+                      return short_desc;
+                    }
+                  }
+                  return nullptr;
+                };
+                detail_description = select_description(cvars::ui_prefer_short_descriptions);
+              }
+
+              if (detail_description) {
+                ImGui::Spacing();
+                const float description_right_margin =
+                    (6.0f + 42.0f) * display_scale;
+                const float wrap_limit =
+                    ImGui::GetCursorPos().x +
+                    std::max(0.0f, ImGui::GetContentRegionAvail().x -
+                                         description_right_margin);
+                ImGui::PushTextWrapPos(wrap_limit);
+                ImGui::TextWrapped("%s",
+                                    detail_description->c_str());
+                ImGui::PopTextWrapPos();
+              }
+              
+              if (selected_row->has_metadata) {
+                if (!selected_row->metadata.publisher.empty()) {
+                  ImGui::Spacing();
+                  ImGui::TextDisabled("Publisher: %s", selected_row->metadata.publisher.c_str());
+                }
+                if (cvars::ui_show_developer_metadata &&
+                    !selected_row->metadata.developer.empty()) {
+                  ImGui::TextDisabled("Developer: %s", selected_row->metadata.developer.c_str());
+                }
+                if (cvars::ui_show_genre_metadata &&
+                    !selected_row->metadata.genre.empty()) {
+                  std::string genre_str;
+                  for (size_t i = 0; i < selected_row->metadata.genre.size(); ++i) {
+                    if (i > 0) genre_str += ",";
+                    genre_str += selected_row->metadata.genre[i];
+                  }
+                  ImGui::TextDisabled("Genre: %s", genre_str.c_str());
+                }
+                if (cvars::ui_show_release_date_metadata &&
+                    !selected_row->metadata.release_date.empty()) {
+                  ImGui::TextDisabled("Release Date: %s", selected_row->metadata.release_date.c_str());
+                }
+                if (cvars::ui_show_user_rating_metadata &&
+                    !selected_row->metadata.user_rating.empty()) {
+                  ImGui::TextDisabled("Rating: %s", selected_row->metadata.user_rating.c_str());
+                }
+              }
+              
+              if (cvars::ui_show_title_id_metadata &&
+                  !selected_row->title_id.empty()) {
+                ImGui::Spacing();
+                ImGui::TextDisabled("Title ID: %s", selected_row->title_id.c_str());
+              }
+              if (selected_row->has_metadata && selected_row->metadata.metadata_ready) {
+                if (!selected_row->metadata.title_type.empty()) {
+                  ImGui::TextDisabled("Type: %s",
+                                      selected_row->metadata.title_type.c_str());
+                }
+              } else {
+                ImGui::TextDisabled("Metadata: Fetching from x360db...");
+              }
+            }
+          }
+        ImGui::EndChild();
+
+        if (show_search_panel_) {
+          const ImGuiViewport* viewport = ImGui::GetMainViewport();
+          ImGui::SetNextWindowPos(viewport->Pos);
+          ImGui::SetNextWindowSize(viewport->Size);
+          ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+          ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+          ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+          ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0));
+          const ImGuiWindowFlags dim_flags =
+              ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+              ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove |
+              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoInputs |
+              ImGuiWindowFlags_NoCollapse;
+          if (ImGui::Begin("##gamelist_search_dim", nullptr, dim_flags)) {
+            ImDrawList* dim_draw_list = ImGui::GetWindowDrawList();
+            const ImVec2 dim_min = ImGui::GetWindowPos();
+            const ImVec2 dim_max =
+                ImVec2(dim_min.x + ImGui::GetWindowSize().x,
+                       dim_min.y + ImGui::GetWindowSize().y);
+            dim_draw_list->AddRectFilled(
+                dim_min, dim_max,
+                ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.55f)));
+          }
+          ImGui::End();
+          ImGui::PopStyleColor();
+          ImGui::PopStyleVar(3);
+
+          // Get the selected guide image from config
+          std::string guide_asset_path =
+              ResolveConfiguredGuideBackgroundAssetPath(false);
+          
+          auto search_panel_tex = GetOrCreateImageTexture(guide_asset_path);
+          const float fallback_aspect = 520.0f / 640.0f;
+          float texture_aspect = fallback_aspect;
+          if (search_panel_tex && search_panel_tex->height > 0) {
+            texture_aspect = static_cast<float>(search_panel_tex->width) /
+                             static_cast<float>(search_panel_tex->height);
+          }
+
+          const float panel_height = io.DisplaySize.y;
+          const float panel_width = texture_aspect * panel_height;
+          const ImVec2 panel_size(panel_width, panel_height);
+          const ImVec2 panel_padding(32.0f * display_scale,
+                                     34.0f * display_scale);
+
+          const ImVec2 viewport_pos = ImGui::GetMainViewport()->Pos;
+          const ImVec2 overlay_pos(viewport_pos.x, viewport_pos.y);
+
+          if (search_panel_focus_input_requested_ ||
+              search_panel_list_focus_requested_) {
+            ImGui::SetNextWindowFocus();
+          }
+          ImGui::SetNextWindowPos(overlay_pos, ImGuiCond_Always);
+          ImGui::SetNextWindowSize(panel_size, ImGuiCond_Always);
+          ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, panel_padding);
+          ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+          ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+          ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0));
+          const ImGuiWindowFlags search_flags =
+              ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+              ImGuiWindowFlags_NoSavedSettings |
+              ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar |
+              ImGuiWindowFlags_NoMove;
+          bool search_panel_should_close = false;
+          if (ImGui::Begin("##gamelist_search_overlay", nullptr, search_flags)) {
+            ImDrawList* overlay_draw_list = ImGui::GetWindowDrawList();
+            const ImVec2 overlay_min = ImGui::GetWindowPos();
+            const ImVec2 overlay_max =
+                ImVec2(overlay_min.x + ImGui::GetWindowSize().x,
+                       overlay_min.y + ImGui::GetWindowSize().y);
+            DrawGuidePanelBackground(overlay_draw_list, search_panel_tex,
+                                     overlay_min, overlay_max);
+
+            if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
+              search_panel_should_close = true;
+            }
+
+            const float ux = io.DisplaySize.x / 1024.0f;
+            const float uy = io.DisplaySize.y / 576.0f;
+            const OverlayHeaderLayout header_layout = DrawOverlayHeader(
+                overlay_draw_list, overlay_min, panel_size, panel_padding, ux,
+                uy, "Search Games");
+            const float content_start_y =
+                header_layout.position.y + header_layout.font_size +
+                (65.0f * display_scale);
+            const float min_search_width = 240.0f * display_scale;
+            const float target_search_width =
+                panel_size.x - (panel_padding.x * 2.0f) - (160.0f * display_scale);
+            const float search_field_width =
+                std::max(min_search_width, target_search_width);
+            const float search_field_offset = 35.0f * display_scale;
+            const float search_field_x =
+                overlay_min.x + (panel_size.x * 0.5f) -
+                (search_field_width * 0.5f) - search_field_offset;
+            ImGui::SetCursorScreenPos(
+                ImVec2(search_field_x, content_start_y));
+            ImGui::PushItemWidth(search_field_width);
+
+            if (search_panel_focus_input_requested_) {
+              ImGui::SetKeyboardFocusHere();
+              search_panel_focus_input_requested_ = false;
+              gamelist_window_focus_requested = false;
+            }
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,
+                                14.0f * display_scale);
+            ImGui::InputText("##search_query", search_input_buffer_,
+                             sizeof(search_input_buffer_));
+            ImGui::PopStyleVar();
+            if (search_input_buffer_[0] != '\0') {
+              const ImVec2 input_min = ImGui::GetItemRectMin();
+              const ImVec2 input_max = ImGui::GetItemRectMax();
+              const ImGuiStyle& input_style = ImGui::GetStyle();
+              const float text_height = ImGui::GetFontSize();
+              const float text_y =
+                  input_min.y + (input_max.y - input_min.y - text_height) * 0.5f;
+              const ImVec2 text_pos(input_min.x + input_style.FramePadding.x,
+                                     text_y);
+              DrawTextWithConfiguredEffect(ImGui::GetWindowDrawList(),
+                                           ImGui::GetFont(),
+                                           ImGui::GetFontSize(), text_pos,
+                                           ImGui::GetColorU32(ImGuiCol_Text),
+                                           search_input_buffer_);
+            }
+            const bool search_input_focused = ImGui::IsItemFocused();
+            ImGui::PopItemWidth();
+            if (ImGui::IsItemActivated()) {
+              UWP::ShowKeyboard();
+            }
+            
+            if (search_input_focused) {
+              gamelist_window_focus_requested = false;
+            }
+
+            const std::string lowered_query =
+                normalize_search_text(search_input_buffer_);
+            const bool has_query = !lowered_query.empty();
+            std::vector<const GameListRow*> filtered_rows;
+            filtered_rows.reserve(game_rows.size());
+            if (has_query) {
+              for (const auto& row : game_rows) {
+                bool matches =
+                    normalize_search_text(get_game_display_title(row)).find(
+                        lowered_query) != std::string::npos;
+                if (!matches) {
+                  matches = normalize_search_text(row.filename).find(lowered_query) !=
+                            std::string::npos;
+                }
+                if (!matches && !row.title_id.empty()) {
+                  matches = normalize_search_text(row.title_id).find(lowered_query) !=
+                            std::string::npos;
+                }
+                if (matches) {
+                  filtered_rows.push_back(&row);
+                }
+              }
+            } else {
+              search_selected_game_path_.clear();
+            }
+
+            const GameListRow* search_selected_row = nullptr;
+            for (const auto* row : filtered_rows) {
+              if (row->path == search_selected_game_path_) {
+                search_selected_row = row;
+                break;
+              }
+            }
+            if (!filtered_rows.empty() && !search_selected_row) {
+              search_selected_game_path_ = filtered_rows.front()->path;
+              search_selected_row = filtered_rows.front();
+            }
+
+            size_t search_selected_row_index = 0;
+            if (search_selected_row) {
+              for (size_t i = 0; i < filtered_rows.size(); ++i) {
+                if (filtered_rows[i]->path == search_selected_row->path) {
+                  search_selected_row_index = i;
+                  break;
+                }
+              }
+            }
+
+            if (search_input_focused && !filtered_rows.empty() &&
+                (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown, false) ||
+                 ImGui::IsKeyPressed(ImGuiKey_DownArrow, false))) {
+              search_panel_list_focus_requested_ = true;
+            }
+
+            ImGui::Dummy(ImVec2(0.0f, 8.0f * display_scale));
+            const float results_height = ImGui::GetContentRegionAvail().y;
+            if (ImGui::BeginChild("##search_results",
+                                  ImVec2(-1.0f, results_height), false,
+                                  ImGuiWindowFlags_NoScrollbar)) {
+              const float carousel_outer_padding = 14.0f * display_scale;
+              const float carousel_spacing = 16.0f * display_scale;
+              const float carousel_card_height = 126.0f * display_scale;
+              const std::vector<size_t> ordered_search_row_indices =
+                  build_top_loop_order(filtered_rows.size(),
+                                       search_selected_row_index);
+              ImGui::Dummy(ImVec2(0.0f, 6.0f * display_scale));
+              for (size_t ordered_index = 0;
+                   ordered_index < ordered_search_row_indices.size(); ++ordered_index) {
+                const auto* row = filtered_rows[ordered_search_row_indices[ordered_index]];
+                ImGui::PushID(row->path.c_str());
+                const bool is_selected = search_selected_game_path_ == row->path;
+                const float row_height = carousel_card_height;
+                const float side_inset = carousel_outer_padding;
+                const float card_width = std::max(
+                    160.0f * display_scale,
+                    ImGui::GetContentRegionAvail().x - side_inset * 2.0f);
+                const float row_start_x = ImGui::GetCursorPosX() + side_inset;
+                if (is_selected && search_panel_list_focus_requested_) {
+                  ImGui::SetKeyboardFocusHere();
+                  search_panel_list_focus_requested_ = false;
+                }
+                ImGui::SetCursorPosX(row_start_x);
+                ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
+                ImGui::PushStyleColor(ImGuiCol_HeaderHovered,
+                                      ImVec4(0, 0, 0, 0));
+                ImGui::PushStyleColor(ImGuiCol_HeaderActive,
+                                      ImVec4(0, 0, 0, 0));
+                ImGui::PushStyleColor(ImGuiCol_NavCursor,
+                                      ImVec4(0, 0, 0, 0));
+                if (ImGui::Selectable("##search_row", is_selected, 0,
+                                      ImVec2(card_width, row_height))) {
+                  search_selected_game_path_ = row->path;
+                  selected_game_path_ = row->path;
+                  selected_game_name_ = row->filename;
+                  gamelist_focus_selected_request = true;
+                }
+                ImGui::PopStyleColor(4);
+                const bool row_focused = ImGui::IsItemFocused();
+                if (row_focused && !is_selected) {
+                  search_selected_game_path_ = row->path;
+                  selected_game_path_ = row->path;
+                  selected_game_name_ = row->filename;
+                }
+                if (row_focused && filtered_rows.size() > 1) {
+                  const bool nav_up =
+                      ImGui::IsKeyPressed(ImGuiKey_GamepadDpadUp, false) ||
+                      ImGui::IsKeyPressed(ImGuiKey_UpArrow, false);
+                  const bool nav_down =
+                      ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown, false) ||
+                      ImGui::IsKeyPressed(ImGuiKey_DownArrow, false);
+                  if (nav_up) {
+                    size_t new_index =
+                        (search_selected_row_index + filtered_rows.size() - 1) %
+                        filtered_rows.size();
+                    search_selected_row_index = new_index;
+                    search_selected_game_path_ = filtered_rows[new_index]->path;
+                    selected_game_path_ = search_selected_game_path_;
+                    selected_game_name_ = filtered_rows[new_index]->filename;
+                    search_panel_list_focus_requested_ = true;
+                  } else if (nav_down) {
+                    size_t new_index = (search_selected_row_index + 1) %
+                                       filtered_rows.size();
+                    search_selected_row_index = new_index;
+                    search_selected_game_path_ = filtered_rows[new_index]->path;
+                    selected_game_path_ = search_selected_game_path_;
+                    selected_game_name_ = filtered_rows[new_index]->filename;
+                    search_panel_list_focus_requested_ = true;
+                  }
+                }
+                if (is_selected) {
+                  ImGui::SetItemDefaultFocus();
+                }
+                const ImVec2 item_min = ImGui::GetItemRectMin();
+                const ImVec2 item_max = ImGui::GetItemRectMax();
+                const float pad = 10.0f * display_scale;
+                const float art_size = carousel_card_height - pad * 2.0f;
+                const float image_x = item_min.x + pad;
+                const float image_y = item_min.y +
+                                      std::max(0.0f, (row_height - art_size) * 0.5f);
+                const float text_area_min_x = image_x + art_size + pad * 2.2f;
+                const float text_area_max_x = item_max.x - pad;
+                const float text_area_width =
+                    std::max(0.0f, text_area_max_x - text_area_min_x);
+                const std::string* art_path = get_gamelist_art_path(*row);
+
+                if (art_path) {
+                  auto art_tex = GetOrCreateImageTexture(*art_path);
+                  if (art_tex) {
+                    ImGui::SetCursorScreenPos(ImVec2(image_x, image_y));
+                    ImGui::Image(reinterpret_cast<ImTextureID>(art_tex.get()),
+                                 ImVec2(art_size, art_size));
+                  }
+                }
+
+                const std::string display = get_game_display_title(*row);
+                const std::string secondary_text =
+                    get_game_subtitle(*row, display);
+                const ImVec2 title_size = ImGui::CalcTextSize(display.c_str());
+                const ImVec2 secondary_size = secondary_text.empty()
+                                                  ? ImVec2(0.0f, 0.0f)
+                                                  : ImGui::CalcTextSize(secondary_text.c_str());
+                const float text_line_spacing = 10.0f * display_scale;
+                const float combined_text_height =
+                    title_size.y +
+                    (secondary_text.empty() ? 0.0f
+                                             : (text_line_spacing + secondary_size.y));
+                const float text_y =
+                    item_min.y + std::max(0.0f, (row_height - combined_text_height) * 0.5f);
+                DrawTextWithConfiguredEffect(
+                    ImGui::GetWindowDrawList(), ImGui::GetFont(),
+                    ImGui::GetFontSize(), ImVec2(text_area_min_x, text_y),
+                    IM_COL32(228, 228, 228, 255), display.c_str());
+
+                if (!secondary_text.empty()) {
+                  DrawTextWithConfiguredEffect(
+                      ImGui::GetWindowDrawList(), ImGui::GetFont(),
+                      ImGui::GetFontSize(),
+                      ImVec2(text_area_min_x,
+                             text_y + title_size.y + text_line_spacing),
+                      IM_COL32(153, 153, 153, 255), secondary_text.c_str());
+                }
+
+                if (row_focused && is_selected &&
+                    ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false)) {
+                  request_launch_selected_game = true;
+                  launch_game_path = row->path;
+                }
+                if (row_focused && is_selected &&
+                    ImGui::IsKeyPressed(ImGuiKey_F12, false)) {
+                  selected_game_path_ = row->path;
+                  selected_game_name_ = row->filename;
+                  request_open_game_context_menu = true;
+                }
+
+                ImGui::PopID();
+                ImGui::Dummy(ImVec2(0.0f, carousel_spacing));
+              }
+
+              if (has_query && filtered_rows.empty()) {
+                ImGui::TextWrapped("No games match your search.");
+              }
+            }
+            ImGui::EndChild();
+
+            const float footer_text_size = 13.5f * uy;
+            const float footer_icon_size = 15.6f * uy;
+            const float footer_icon_gap = 22.0f * ux;
+            const float footer_spacing_y = 17.0f * uy;
+            const float footer_select_y = overlay_max.y - (32.0f * uy);
+            const float footer_back_y = footer_select_y - footer_spacing_y;
+            const float footer_base_x = overlay_min.x + panel_size.x * 0.9f;
+            const float footer_back_text_x = footer_base_x - (70.0f * ux);
+            const float footer_back_icon_offset = 35.0f * ux;
+            const float footer_select_text_x = footer_base_x - (60.0f * ux);
+            const float footer_select_icon_offset = 42.0f * ux;
+            auto draw_footer_prompt = [&](char button, const char* text,
+                                          float text_y, float text_x,
+                                          float icon_offset) {
+              DrawTextWithConfiguredEffect(
+                  overlay_draw_list, ImGui::GetFont(), footer_text_size,
+                  ImVec2(text_x, text_y), IM_COL32(205, 205, 205, 255), text);
+              auto tex = GetOrCreateButtonTexture(button);
+              if (!tex) {
+                return;
+              }
+              const ImVec2 icon_center(
+                  text_x + icon_offset,
+                  text_y + footer_text_size * 0.5f);
+              const ImVec2 icon_half(footer_icon_size * 0.5f,
+                                     footer_icon_size * 0.5f);
+              overlay_draw_list->AddImage(
+                  reinterpret_cast<ImTextureID>(tex.get()),
+                  ImVec2(icon_center.x - icon_half.x,
+                         icon_center.y - icon_half.y),
+                  ImVec2(icon_center.x + icon_half.x,
+                         icon_center.y + icon_half.y));
+            };
+            draw_footer_prompt('B', "Back", footer_back_y, footer_back_text_x,
+                               footer_back_icon_offset);
+            draw_footer_prompt('A', "Select", footer_select_y,
+                               footer_select_text_x, footer_select_icon_offset);
+          }
+          ImGui::End();
+          ImGui::PopStyleColor();
+          ImGui::PopStyleVar(3);
+
+          if (search_panel_should_close) {
+            show_search_panel_ = false;
+            search_panel_focus_input_requested_ = false;
+            search_panel_list_focus_requested_ = false;
+            search_gamepad_y_was_down_ = false;
+          }
+        }
+
+        if (request_open_game_context_menu &&
+            !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) &&
+            !selected_game_name_.empty()) {
+          gamelist_last_x_open_time = ImGui::GetTime();
+          show_game_context_menu_ = true;
+          game_context_menu_focus_requested_ = true;
+          if (show_search_panel_) {
+            show_search_panel_ = false;
+            search_panel_focus_input_requested_ = false;
+            search_panel_list_focus_requested_ = false;
+          }
+        }
+
+        bool close_context_menu = false;
+        if (show_game_context_menu_ && !selected_game_name_.empty()) {
+          const ImGuiViewport* viewport = ImGui::GetMainViewport();
+          std::string guide_asset_path =
+              ResolveConfiguredGuideBackgroundAssetPath(false);
+
+          auto game_menu_panel_tex = GetOrCreateImageTexture(guide_asset_path);
+          const float fallback_aspect = 520.0f / 640.0f;
+          float texture_aspect = fallback_aspect;
+          if (game_menu_panel_tex && game_menu_panel_tex->height > 0) {
+            texture_aspect = static_cast<float>(game_menu_panel_tex->width) /
+                             static_cast<float>(game_menu_panel_tex->height);
+          }
+
+          const float panel_height = io.DisplaySize.y;
+          const float panel_width = texture_aspect * panel_height;
+          const ImVec2 panel_size(panel_width, panel_height);
+          const ImVec2 panel_padding(32.0f * display_scale,
+                                     34.0f * display_scale);
+
+          ImGui::SetNextWindowPos(viewport->Pos);
+          ImGui::SetNextWindowSize(viewport->Size);
+          ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+          ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+          ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+          ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0));
+          const ImGuiWindowFlags dim_flags =
+              ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+              ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove |
+              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoInputs |
+              ImGuiWindowFlags_NoCollapse;
+          if (ImGui::Begin("##gamelist_game_menu_dim", nullptr, dim_flags)) {
+            ImDrawList* dim_draw_list = ImGui::GetWindowDrawList();
+            const ImVec2 dim_min = ImGui::GetWindowPos();
+            const ImVec2 dim_max =
+                ImVec2(dim_min.x + ImGui::GetWindowSize().x,
+                       dim_min.y + ImGui::GetWindowSize().y);
+            dim_draw_list->AddRectFilled(
+                dim_min, dim_max,
+                ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.55f)));
+          }
+          ImGui::End();
+          ImGui::PopStyleColor();
+          ImGui::PopStyleVar(3);
+
+          if (game_context_menu_focus_requested_) {
+            ImGui::SetNextWindowFocus();
+          }
+          ImGui::SetNextWindowPos(viewport->Pos, ImGuiCond_Always);
+          ImGui::SetNextWindowSize(panel_size, ImGuiCond_Always);
+          ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, panel_padding);
+          ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+          ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+          ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0));
+          const ImGuiWindowFlags game_menu_flags =
+              ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+              ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoCollapse |
+              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoMove;
+          if (ImGui::Begin("##gamelist_game_menu_overlay", nullptr,
+                           game_menu_flags)) {
+            ImDrawList* overlay_draw_list = ImGui::GetWindowDrawList();
+            const ImVec2 overlay_min = ImGui::GetWindowPos();
+            const ImVec2 overlay_max =
+                ImVec2(overlay_min.x + ImGui::GetWindowSize().x,
+                       overlay_min.y + ImGui::GetWindowSize().y);
+            DrawGuidePanelBackground(overlay_draw_list, game_menu_panel_tex,
+                                     overlay_min, overlay_max);
+
+            if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+                ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+              close_context_menu = true;
+            }
+
+            const float ux = io.DisplaySize.x / 1024.0f;
+            const float uy = io.DisplaySize.y / 576.0f;
+            const OverlayHeaderLayout header_layout = DrawOverlayHeader(
+                overlay_draw_list, overlay_min, panel_size, panel_padding, ux,
+                uy, "Game Menu");
+            const std::string game_menu_title =
+                selected_row ? get_game_display_title(*selected_row)
+                             : selected_game_name_;
+            const float content_vertical_offset = 30.0f * display_scale;
+            const float min_button_width = 240.0f * display_scale;
+            const float target_button_width =
+                panel_size.x - (panel_padding.x * 2.0f) -
+                (160.0f * display_scale);
+            const float button_width =
+                std::max(min_button_width, target_button_width);
+            const float button_offset = 35.0f * display_scale;
+            const float button_x =
+                overlay_min.x + (panel_size.x * 0.5f) -
+                (button_width * 0.5f) - button_offset;
+            const float title_x =
+                button_x + ImGui::GetStyle().FramePadding.x;
+            const float title_y =
+                header_layout.position.y + header_layout.font_size +
+                (30.0f * display_scale) + content_vertical_offset;
+            DrawTextWithConfiguredEffect(
+                overlay_draw_list, ImGui::GetFont(), 22.0f * uy,
+                ImVec2(title_x, title_y), IM_COL32(228, 228, 228, 255),
+                game_menu_title.c_str());
+            float content_start_y = title_y + (34.0f * display_scale) + (8.0f * display_scale);
+
+            ImGui::SetCursorScreenPos(ImVec2(button_x, content_start_y));
+
+            auto cstorage_root =
+                dynamic_cast<cvar::ConfigVar<std::filesystem::path>*>(
+                    cvar::ConfigVars->find("storage_root")->second);
+            std::filesystem::path storage_root =
+                cstorage_root->GetTypedConfigValue();
+            if (storage_root.empty()) {
+              storage_root = emulator_window_.emulator()->storage_root();
+            }
+
+            bool focus_first_game_context_option =
+                game_context_menu_focus_requested_;
+            auto draw_game_context_option = [&](const char* visible_label) {
+              const float option_y = ImGui::GetCursorScreenPos().y;
+              ImGui::SetCursorScreenPos(ImVec2(button_x, option_y));
+              const ImGuiStyle& option_style = ImGui::GetStyle();
+              std::string option_id =
+                  fmt::format("{}##game_ctx_option", visible_label);
+              if (focus_first_game_context_option) {
+                ImGui::SetKeyboardFocusHere();
+                focus_first_game_context_option = false;
+                game_context_menu_focus_requested_ = false;
+              }
+              ImGui::PushStyleColor(ImGuiCol_Header,
+                                    ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+              ImGui::PushStyleColor(ImGuiCol_HeaderHovered,
+                                    ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+              ImGui::PushStyleColor(ImGuiCol_HeaderActive,
+                                    ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+              ImGui::PushStyleColor(ImGuiCol_Text,
+                                    ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+              ImGui::PushStyleColor(ImGuiCol_NavCursor,
+                                    ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+              bool clicked = ImGui::Selectable(option_id.c_str(), false, 0,
+                                               ImVec2(button_width, 0.0f));
+              bool highlighted =
+                  ImGui::IsItemHovered() || ImGui::IsItemActive() ||
+                  ImGui::IsItemFocused();
+              ImVec2 item_min = ImGui::GetItemRectMin();
+              ImVec2 item_max = ImGui::GetItemRectMax();
+              ImGui::PopStyleColor(5);
+              if (highlighted) {
+                xe::app::DrawConfiguredComboHighlight(item_min, item_max, 1.6f,
+                                                      6.0f);
+              }
+              const float line_height = ImGui::GetTextLineHeight();
+              const ImVec2 text_pos(
+                  item_min.x + option_style.FramePadding.x,
+                  item_min.y + (item_max.y - item_min.y - line_height) * 0.5f);
+              DrawTextWithConfiguredEffect(
+                  overlay_draw_list, ImGui::GetFont(), ImGui::GetFontSize(),
+                  text_pos, IM_COL32(228, 228, 228, 255), visible_label);
+              if (clicked) {
+                close_context_menu = true;
+              }
+              ImGui::Spacing();
+              return clicked;
+            };
+
+            if (!close_context_menu) {
+            if (draw_game_context_option("Apply Patch")) {
+            std::filesystem::path patches_root = storage_root / "patches";
+            std::string patches_dir = patches_root.string();
+            std::string title_id =
+                UWP::GetTitleIdFromPath(selected_game_path_);
+            if (!title_id.empty()) {
+              if (has_existing_patch_for_title(patches_root, title_id)) {
+                pending_existing_download_kind_ = ManualInstallKind::kPatch;
+                pending_existing_download_destination_ = patches_root;
+                pending_existing_download_title_id_ = title_id;
+                action_status_ = fmt::format(
+                    "Patch files for {} already exist.\n"
+                    "Re-download and override existing files, or cancel?",
+                    title_id);
+                action_popup_mode_ = ActionPopupMode::kExistingDownloadPrompt;
+                show_action_status_ = true;
+              } else {
+                begin_patch_download(title_id, patches_root);
+              }
+            } else {
+              action_status_ = "Could not resolve title ID for patch download.";
+              action_popup_mode_ = ActionPopupMode::kInfo;
+              show_action_status_ = true;
+            }
+          }
+
+          if (draw_game_context_option("Apply Optimized Settings")) {
+            std::filesystem::path config_root = storage_root / "config";
+            std::string config_dir = config_root.string();
+            std::string title_id =
+                UWP::GetTitleIdFromPath(selected_game_path_);
+            if (!title_id.empty()) {
+              const auto config_path =
+                  config_root / fmt::format("{}.config.toml", title_id);
+              if (std::filesystem::exists(config_path)) {
+                pending_existing_download_kind_ = ManualInstallKind::kConfig;
+                pending_existing_download_destination_ = config_root;
+                pending_existing_download_title_id_ = title_id;
+                action_status_ = fmt::format(
+                    "Optimized settings for {} already exist.\n"
+                    "Re-download and override existing settings, or cancel?",
+                    title_id);
+                action_popup_mode_ = ActionPopupMode::kExistingDownloadPrompt;
+                show_action_status_ = true;
+              } else {
+                begin_optimized_settings_download(title_id, config_root);
+              }
+            } else {
+              action_status_ =
+                  "Could not resolve title ID for optimized settings download.";
+              action_popup_mode_ = ActionPopupMode::kInfo;
+              show_action_status_ = true;
+            }
+          }
+
+          if (draw_game_context_option("Create / Edit Per-Game Config")) {
+            std::string title_id =
+                UWP::GetTitleIdFromPath(selected_game_path_);
+            const auto config_root = storage_root / "config";
+            const auto config_path =
+                config_root / fmt::format("{}.config.toml", title_id);
+            const std::string pergame_display_name = [&]() -> std::string {
+              if (selected_row) {
+                auto display = get_game_display_title(*selected_row);
+                if (!display.empty()) {
+                  return display;
+                }
+              }
+              if (!selected_game_name_.empty()) {
+                return selected_game_name_;
+              }
+              return std::string();
+            }();
+            if (title_id.empty()) {
+              action_status_ = "Could not resolve title ID for per-game config.";
+              action_popup_mode_ = ActionPopupMode::kInfo;
+              show_action_status_ = true;
+            } else if (!std::filesystem::exists(config_path)) {
+              pending_per_game_config_title_id_ = title_id;
+              pending_per_game_config_path_ = config_path;
+              pending_per_game_config_title_display_ =
+                  pergame_display_name.empty() ? title_id : pergame_display_name;
+              action_status_ =
+                  "No per-game config exists for this title yet.\n"
+                  "Create one now, or browse and edit an existing file.";
+              action_popup_mode_ = ActionPopupMode::kPerGameConfigPrompt;
+              show_action_status_ = true;
+            } else {
+              std::ifstream ifs(config_path, std::ios::binary);
+              std::string existing_text((std::istreambuf_iterator<char>(ifs)),
+                                        std::istreambuf_iterator<char>());
+              open_per_game_config_editor(
+                  title_id, config_path, existing_text,
+                  pergame_display_name.empty() ? title_id : pergame_display_name);
+            }
+          }
+
+          if (draw_game_context_option("Apply Config Overrides")) {
+            imgui_drawer()->SetIgnoreInput(true);
+            UWP::SelectFile([this, apply_per_game_config,
+                             parse_title_id_from_filename,
+                             ensure_plugin_layout_for_title](
+                              std::string file_path) {
+              imgui_drawer()->SetIgnoreInput(false);
+              if (file_path.empty()) {
+                return;
+              }
+              auto dest = pending_manual_destination_;
+              if (!dest.empty()) {
+                std::filesystem::create_directories(dest);
+                std::filesystem::path source_path = file_path;
+                std::filesystem::path destination_path =
+                    dest / source_path.filename();
+                std::string title_id = pending_manual_title_id_;
+                if (title_id.empty()) {
+                  title_id = parse_title_id_from_filename(
+                      destination_path.filename().string());
+                }
+                if (pending_manual_kind_ == ManualInstallKind::kConfig &&
+                    !title_id.empty()) {
+                  destination_path =
+                      dest / fmt::format("{}.config.toml", title_id);
+                }
+                std::error_code copy_ec;
+                std::filesystem::copy_file(
+                    source_path, destination_path,
+                    std::filesystem::copy_options::overwrite_existing, copy_ec);
+                if (copy_ec) {
+                  action_status_ =
+                      "Failed to copy file. Please try again.";
+                } else {
+                  bool enabled = true;
+                  if (pending_manual_kind_ == ManualInstallKind::kPatch) {
+                    enabled = EnablePatchesForTitle(dest, title_id);
+                  }
+                  bool config_applied = true;
+                  bool plugin_layout_ok = true;
+                  std::string plugin_layout_error;
+                  if (pending_manual_kind_ == ManualInstallKind::kConfig &&
+                      !title_id.empty()) {
+                    config_applied =
+                        apply_per_game_config(title_id, destination_path);
+                  } else if (pending_manual_kind_ == ManualInstallKind::kPlugin &&
+                             !title_id.empty()) {
+                    plugin_layout_ok = ensure_plugin_layout_for_title(
+                        dest, title_id, selected_game_name_,
+                        &plugin_layout_error);
+                  }
+                  switch (pending_manual_kind_) {
+                    case ManualInstallKind::kPatch:
+                      action_status_ = enabled
+                                            ? "Patch installed manually."
+                                            : "Patch copied, but enabling failed.";
+                      break;
+                    case ManualInstallKind::kPlugin:
+                      action_status_ = plugin_layout_ok
+                                           ? "Plugin installed manually."
+                                           : fmt::format(
+                                                 "Plugin copied manually, but plugins.toml layout is incomplete.\n{}",
+                                                 plugin_layout_error);
+                      break;
+                    case ManualInstallKind::kConfig:
+                      action_status_ = config_applied
+                                           ? "Optimized settings installed and applied manually."
+                                           : "Optimized settings copied manually, but apply failed.";
+                      break;
+                    default:
+                      action_status_ = "File installed.";
+                      break;
+                  }
+                }
+                action_popup_mode_ = ActionPopupMode::kInfo;
+                show_action_status_ = true;
+              }
+            });
+          }
+
+          if (draw_game_context_option("Install Plugin")) {
+            std::filesystem::path plugins_root = storage_root / "plugins";
+            std::string title_id =
+                UWP::GetTitleIdFromPath(selected_game_path_);
+            if (!title_id.empty()) {
+              std::filesystem::path title_plugins_dir =
+                  plugins_root / title_id;
+              UWP::DownloadPluginsForGame(
+                  title_id, title_plugins_dir.string(),
+                  [this, open_manual_prompt, ensure_plugin_layout_for_title,
+                   title_id, title_plugins_dir](bool ok, std::string msg) {
+                    if (ok) {
+                      std::string layout_error;
+                      const bool layout_ok = ensure_plugin_layout_for_title(
+                          title_plugins_dir, title_id, selected_game_name_,
+                          &layout_error);
+                      if (layout_ok) {
+                        action_status_ = fmt::format(
+                            "Downloaded and installed plugins for {}.",
+                            title_id);
+                      } else {
+                        action_status_ = fmt::format(
+                            "Downloaded plugin files for {}, but install layout is incomplete.\n{}",
+                            title_id, layout_error);
+                      }
+                      action_popup_mode_ = ActionPopupMode::kInfo;
+                      pending_manual_kind_ = ManualInstallKind::kPlugin;
+                      pending_manual_destination_ = title_plugins_dir;
+                      pending_manual_title_id_ = title_id;
+                      action_popup_should_close_ = true;
+                      show_action_status_ = true;
+                    } else {
+                      open_manual_prompt(
+                          title_plugins_dir, ManualInstallKind::kPlugin,
+                          title_id,
+                          "No matching plugins were found online.\n"
+                          "Do you want to select a plugin manually?");
+                    }
+                  });
+            } else {
+              action_status_ = "Could not resolve title ID for plugin download.";
+              action_popup_mode_ = ActionPopupMode::kInfo;
+              show_action_status_ = true;
+            }
+          }
+
+          if (draw_game_context_option("Manage DLC")) {
+            std::string title_id =
+                UWP::GetTitleIdFromPath(selected_game_path_);
+            if (!title_id.empty()) {
+              emulator_window_.InstallContentForTitle(
+                  title_id, storage_root,
+                  EmulatorWindow::DlcInstallMode::kManual);
+            } else {
+              emulator_window_.InstallContent();
+            }
+          }
+
+          if (draw_game_context_option("Manage Title Updates")) {
+            std::string title_id = UWP::GetTitleIdFromPath(selected_game_path_);
+            std::string media_id = UWP::GetMediaIdFromPath(selected_game_path_);
+            const auto title_updates_root = storage_root / "title_updates";
+
+            if (title_id.empty()) {
+              action_status_ =
+                  "Could not resolve title ID for title update management.";
+              action_popup_mode_ = ActionPopupMode::kInfo;
+              show_action_status_ = true;
+            } else {
+              UWP::DownloadTitleUpdatesForGame(
+                  title_id, media_id, xe::path_to_utf8(title_updates_root),
+                  [this, title_id, title_updates_root](
+                      bool ok, std::vector<std::string> files,
+                      std::string message) {
+                    if (!ok) {
+                      action_status_ = message.empty()
+                                           ? "Failed to download title updates."
+                                           : message;
+                      action_popup_mode_ = ActionPopupMode::kInfo;
+                      show_action_status_ = true;
+                      return;
+                    }
+
+                    int installed = 0;
+                    int failed = 0;
+                    std::vector<std::string> installed_tu_names;
+                    for (const auto& file : files) {
+                      try {
+                        auto abs_path = std::filesystem::absolute(file);
+                        Emulator::ContentInstallEntry install_entry(abs_path);
+                        auto result =
+                            emulator_window_.emulator_->InstallContentPackage(
+                                abs_path, install_entry);
+                        if (result == X_STATUS_SUCCESS) {
+                          ++installed;
+                          installed_tu_names.push_back(
+                              std::filesystem::path(
+                                  install_entry.data_installation_path_)
+                                  .filename()
+                                  .string());
+                          std::error_code remove_ec;
+                          std::filesystem::remove(abs_path, remove_ec);
+                        } else {
+                          ++failed;
+                        }
+                      } catch (...) {
+                        ++failed;
+                      }
+                    }
+
+                    if (!installed_tu_names.empty()) {
+                      const auto content_root =
+                          emulator_window_.emulator_->content_root();
+                      const auto installed_tu_root = content_root /
+                                                     "0000000000000000" /
+                                                     title_id / "000B0000";
+                      const auto installed_tu_headers_root = content_root /
+                                                             "0000000000000000" /
+                                                             title_id /
+                                                             "Headers" /
+                                                             "000B0000";
+
+                      auto keep_installed_tu =
+                          [&](const std::filesystem::path& path) {
+                            const auto name = path.filename().string();
+                            return std::find(installed_tu_names.begin(),
+                                             installed_tu_names.end(),
+                                             name) != installed_tu_names.end();
+                          };
+                      auto keep_installed_tu_header =
+                          [&](const std::filesystem::path& path) {
+                            const auto name = path.filename().string();
+                            return std::find_if(
+                                       installed_tu_names.begin(),
+                                       installed_tu_names.end(),
+                                       [&](const std::string& installed_name) {
+                                         return name == installed_name +
+                                                            ".header";
+                                       }) != installed_tu_names.end();
+                          };
+
+                      std::error_code cleanup_ec;
+                      if (std::filesystem::exists(installed_tu_root)) {
+                        for (const auto& entry : std::filesystem::directory_iterator(
+                                 installed_tu_root)) {
+                          if (keep_installed_tu(entry.path())) {
+                            continue;
+                          }
+                          std::filesystem::remove_all(entry.path(), cleanup_ec);
+                        }
+                      }
+                      if (!cleanup_ec &&
+                          std::filesystem::exists(installed_tu_headers_root)) {
+                        for (const auto& entry : std::filesystem::directory_iterator(
+                                 installed_tu_headers_root)) {
+                          if (keep_installed_tu_header(entry.path())) {
+                            continue;
+                          }
+                          std::filesystem::remove(entry.path(), cleanup_ec);
+                        }
+                      }
+                      if (cleanup_ec) {
+                        action_status_ = fmt::format(
+                            "Installed new title update for {}, but failed to clean up older title updates.",
+                            title_id);
+                        action_popup_mode_ = ActionPopupMode::kInfo;
+                        show_action_status_ = true;
+                        return;
+                      }
+                    }
+
+                    if (failed > 0) {
+                      action_status_ = fmt::format(
+                          "{} Installed {} title update package(s); {} failed."
+                          "\nFailed downloads remain in: {}",
+                          message, installed, failed,
+                          xe::path_to_utf8(title_updates_root));
+                    } else {
+                      action_status_ = fmt::format(
+                          "{} Installed {} title update package(s).", message,
+                          installed);
+                    }
+                    action_popup_mode_ = ActionPopupMode::kInfo;
+                    show_action_status_ = true;
+                  });
+            }
+          }
+
+            const float footer_text_size = 13.5f * uy;
+            const float footer_icon_size = 15.6f * uy;
+            const float footer_spacing_y = 17.0f * uy;
+            const float footer_select_y = overlay_max.y - (32.0f * uy);
+            const float footer_back_y = footer_select_y - footer_spacing_y;
+            const float footer_base_x = overlay_min.x + panel_size.x * 0.9f;
+            const float footer_back_text_x = footer_base_x - (70.0f * ux);
+            const float footer_back_icon_offset = 35.0f * ux;
+            const float footer_select_text_x = footer_base_x - (60.0f * ux);
+            const float footer_select_icon_offset = 42.0f * ux;
+            xe::app::DrawFooterPrompt(
+                overlay_draw_list, GetOrCreateButtonTexture('B'),
+                footer_text_size, footer_icon_size, "Back", footer_back_y,
+                footer_back_text_x, footer_back_icon_offset);
+            xe::app::DrawFooterPrompt(
+                overlay_draw_list, GetOrCreateButtonTexture('A'),
+                footer_text_size, footer_icon_size, "Select", footer_select_y,
+                footer_select_text_x, footer_select_icon_offset);
+          }
+
+          }
+
+          ImGui::End();
+          ImGui::PopStyleColor();
+          ImGui::PopStyleVar(3);
+          if (close_context_menu) {
+            show_game_context_menu_ = false;
+            game_context_menu_focus_requested_ = false;
+            gamelist_window_focus_requested = true;
+            gamelist_focus_selected_request = true;
+          }
+        }
+
+        if (show_action_status_) {
+          ImGui::OpenPopup("Action Result");
+          show_action_status_ = false;
+          action_popup_focus_requested_ = true;
+        }
+
+        if (action_popup_should_close_) {
+          ImGui::CloseCurrentPopup();
+          action_popup_should_close_ = false;
+        }
+
+        const ImGuiViewport* action_viewport = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(action_viewport->Pos);
+        ImGui::SetNextWindowSize(action_viewport->Size);
+        const ImGuiWindowFlags action_popup_flags =
+            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBackground;
+        if (action_popup_focus_requested_) {
+          ImGui::SetNextWindowFocus();
+        }
+        if (ImGui::BeginPopupModal("Action Result", nullptr,
+                                   action_popup_flags)) {
+          ImDrawList* action_draw_list = ImGui::GetWindowDrawList();
+          const ImVec2 screen_min = action_viewport->Pos;
+          const ImVec2 screen_max = ImVec2(screen_min.x + action_viewport->Size.x,
+                                           screen_min.y + action_viewport->Size.y);
+          action_draw_list->AddRectFilled(
+              screen_min, screen_max,
+              ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.55f)));
+
+          std::string guide_asset_path = ResolveConfiguredGuideBackgroundAssetPath(false);
+          auto action_panel_tex = GetOrCreateImageTexture(guide_asset_path);
+          const float panel_height = io.DisplaySize.y;
+          const float panel_width = std::min(
+              action_viewport->Size.x,
+              GetGuidePanelSize(action_panel_tex, panel_height).x);
+          const ImVec2 panel_size(panel_width, panel_height);
+          const ImVec2 panel_padding(32.0f * display_scale,
+                                     34.0f * display_scale);
+          const float ux = io.DisplaySize.x / 1024.0f;
+          const float uy = io.DisplaySize.y / 576.0f;
+          const ImVec2 overlay_min = action_viewport->Pos;
+          const ImVec2 overlay_max(overlay_min.x + panel_size.x,
+                                   overlay_min.y + panel_size.y);
+          DrawGuidePanelBackground(action_draw_list, action_panel_tex, overlay_min,
+                                   overlay_max);
+
+          auto get_action_popup_title = [&]() -> const char* {
+            switch (action_popup_mode_) {
+              case ActionPopupMode::kInfo:
+                return "Action Result";
+              case ActionPopupMode::kManualPatchPrompt:
+                return "Manual Patch Install";
+              case ActionPopupMode::kManualPluginPrompt:
+                return "Manual Plugin Install";
+              case ActionPopupMode::kManualConfigPrompt:
+                return "Manual Config Install";
+              case ActionPopupMode::kExistingDownloadPrompt:
+                return "Download Override";
+              case ActionPopupMode::kPerGameConfigPrompt:
+                return "Per Game Config";
+              default:
+                return "Action Result";
+            }
+          };
+
+          const OverlayHeaderLayout header_layout = DrawOverlayHeader(
+              action_draw_list, overlay_min, panel_size, panel_padding, ux, uy,
+              get_action_popup_title());
+          const float content_start_y =
+              header_layout.position.y + header_layout.font_size +
+              (65.0f * display_scale);
+          const float content_x = overlay_min.x + panel_padding.x;
+          const float field_width = 320.0f * ux;
+          const float button_gap = 8.0f * ux;
+          const ImVec2 action_text_pos(content_x, content_start_y);
+          DrawTextWithConfiguredEffect(action_draw_list, ImGui::GetFont(),
+                                       ImGui::GetFontSize(), action_text_pos,
+                                       ImGui::GetColorU32(ImGuiCol_Text),
+                                       action_status_.c_str());
+          const ImVec2 action_text_size = ImGui::CalcTextSize(
+              action_status_.c_str(), nullptr, false, field_width);
+          ImGui::SetCursorScreenPos(
+              ImVec2(content_x,
+                     content_start_y + action_text_size.y + (24.0f * uy)));
+
+          auto focus_first_action = [&]() {
+            if (action_popup_focus_requested_) {
+              ImGui::SetKeyboardFocusHere();
+              action_popup_focus_requested_ = false;
+            }
+          };
+          auto draw_action_button = [&](const char* label,
+                                        const ImVec2& size = ImVec2(0.0f, 0.0f)) {
+            return DrawTextEffectButton(label, size);
+          };
+
+          if (action_popup_mode_ == ActionPopupMode::kManualPatchPrompt ||
+              action_popup_mode_ == ActionPopupMode::kManualPluginPrompt ||
+              action_popup_mode_ == ActionPopupMode::kManualConfigPrompt) {
+            const ImVec2 button_size((field_width - button_gap) * 0.5f, 0.0f);
+            focus_first_action();
+            if (draw_action_button("Browse", button_size)) {
+              imgui_drawer()->SetIgnoreInput(true);
+              UWP::SelectFile([this, parse_title_id_from_filename,
+                               apply_per_game_config,
+                               ensure_plugin_layout_for_title](
+                                  std::string file_path) {
+                imgui_drawer()->SetIgnoreInput(false);
+                if (file_path.empty()) {
+                  return;
+                }
+                auto dest = pending_manual_destination_;
+                if (!dest.empty()) {
+                  std::filesystem::create_directories(dest);
+                  std::filesystem::path source_path = file_path;
+                  std::filesystem::path destination_path =
+                      dest / source_path.filename();
+                  std::string title_id = pending_manual_title_id_;
+                  if (title_id.empty()) {
+                    title_id = parse_title_id_from_filename(
+                        destination_path.filename().string());
+                  }
+                  if (pending_manual_kind_ == ManualInstallKind::kConfig &&
+                      !title_id.empty()) {
+                    destination_path =
+                        dest / fmt::format("{}.config.toml", title_id);
+                  }
+                  std::error_code copy_ec;
+                  std::filesystem::copy_file(
+                      source_path, destination_path,
+                      std::filesystem::copy_options::overwrite_existing,
+                      copy_ec);
+                  if (copy_ec) {
+                    action_status_ =
+                        "Failed to copy file. Please try again.";
+                  } else {
+                    bool enabled = true;
+                    if (pending_manual_kind_ == ManualInstallKind::kPatch) {
+                      enabled = EnablePatchesForTitle(dest, title_id);
+                    }
+                    bool config_applied = true;
+                    bool plugin_layout_ok = true;
+                    std::string plugin_layout_error;
+                    if (pending_manual_kind_ == ManualInstallKind::kConfig &&
+                        !title_id.empty()) {
+                      config_applied =
+                          apply_per_game_config(title_id, destination_path);
+                    } else if (pending_manual_kind_ ==
+                                   ManualInstallKind::kPlugin &&
+                               !title_id.empty()) {
+                      plugin_layout_ok = ensure_plugin_layout_for_title(
+                          dest, title_id, selected_game_name_,
+                          &plugin_layout_error);
+                    }
+                    switch (pending_manual_kind_) {
+                      case ManualInstallKind::kPatch:
+                        action_status_ = enabled
+                                              ? "Patch installed manually."
+                                              : "Patch copied, but enabling failed.";
+                        break;
+                      case ManualInstallKind::kPlugin:
+                        action_status_ = plugin_layout_ok
+                                             ? "Plugin installed manually."
+                                             : fmt::format(
+                                                   "Plugin copied manually, but plugins.toml layout is incomplete.\n{}",
+                                                   plugin_layout_error);
+                        break;
+                      case ManualInstallKind::kConfig:
+                        action_status_ = config_applied
+                                             ? "Optimized settings installed and applied manually."
+                                             : "Optimized settings copied manually, but apply failed.";
+                        break;
+                      default:
+                        action_status_ = "File installed.";
+                        break;
+                    }
+                  }
+                  action_popup_mode_ = ActionPopupMode::kInfo;
+                  show_action_status_ = true;
+                }
+              });
+            }
+            ImGui::SameLine(0.0f, button_gap);
+            if (draw_action_button("Cancel", button_size)) {
+              ImGui::CloseCurrentPopup();
+              action_popup_mode_ = ActionPopupMode::kInfo;
+              pending_manual_kind_ = ManualInstallKind::kNone;
+            }
+          } else if (action_popup_mode_ == ActionPopupMode::kPerGameConfigPrompt) {
+            const ImVec2 button_size(field_width, 0.0f);
+            focus_first_action();
+            if (draw_action_button("Create Per Game Config", button_size)) {
+              std::string initial =
+                  "# Per-game config overrides\n"
+                  "# Add only the options you want to override for this title.\n"
+                  "\n[General]\n";
+              if (std::filesystem::exists(pending_per_game_config_path_)) {
+                std::ifstream ifs(pending_per_game_config_path_, std::ios::binary);
+                initial.assign((std::istreambuf_iterator<char>(ifs)),
+                               std::istreambuf_iterator<char>());
+              }
+              open_per_game_config_editor(
+                  pending_per_game_config_title_id_,
+                  pending_per_game_config_path_, initial,
+                  pending_per_game_config_title_display_);
+              ImGui::CloseCurrentPopup();
+              action_popup_mode_ = ActionPopupMode::kInfo;
+            }
+            ImGui::SetCursorScreenPos(
+                ImVec2(content_x, ImGui::GetCursorScreenPos().y + (8.0f * uy)));
+            if (draw_action_button("Browse and Edit", button_size)) {
+              imgui_drawer()->SetIgnoreInput(true);
+              UWP::SelectFile([this, open_per_game_config_editor](std::string file_path) {
+                imgui_drawer()->SetIgnoreInput(false);
+                if (file_path.empty()) {
+                  return;
+                }
+                std::ifstream ifs(file_path, std::ios::binary);
+                std::string contents((std::istreambuf_iterator<char>(ifs)),
+                                     std::istreambuf_iterator<char>());
+                open_per_game_config_editor(
+                    pending_per_game_config_title_id_,
+                    pending_per_game_config_path_, contents,
+                    pending_per_game_config_title_display_);
+              });
+              ImGui::CloseCurrentPopup();
+              action_popup_mode_ = ActionPopupMode::kInfo;
+            }
+            ImGui::SetCursorScreenPos(
+                ImVec2(content_x, ImGui::GetCursorScreenPos().y + (8.0f * uy)));
+            if (draw_action_button("Cancel", button_size)) {
+              ImGui::CloseCurrentPopup();
+              action_popup_mode_ = ActionPopupMode::kInfo;
+            }
+          } else if (action_popup_mode_ ==
+                     ActionPopupMode::kExistingDownloadPrompt) {
+            const ImVec2 button_size(field_width, 0.0f);
+            focus_first_action();
+            if (draw_action_button("Re-download and Override", button_size)) {
+              const auto kind = pending_existing_download_kind_;
+              const auto dest = pending_existing_download_destination_;
+              const auto title_id = pending_existing_download_title_id_;
+              pending_existing_download_kind_ = ManualInstallKind::kNone;
+              pending_existing_download_destination_.clear();
+              pending_existing_download_title_id_.clear();
+
+              ImGui::CloseCurrentPopup();
+              action_popup_mode_ = ActionPopupMode::kInfo;
+
+              if (kind == ManualInstallKind::kPatch) {
+                begin_patch_download(title_id, dest);
+              } else if (kind == ManualInstallKind::kConfig) {
+                begin_optimized_settings_download(title_id, dest);
+              }
+            }
+            ImGui::SetCursorScreenPos(
+                ImVec2(content_x, ImGui::GetCursorScreenPos().y + (8.0f * uy)));
+            if (draw_action_button("Cancel", button_size)) {
+              pending_existing_download_kind_ = ManualInstallKind::kNone;
+              pending_existing_download_destination_.clear();
+              pending_existing_download_title_id_.clear();
+              ImGui::CloseCurrentPopup();
+              action_popup_mode_ = ActionPopupMode::kInfo;
+            }
+          } else {
+            focus_first_action();
+            if (draw_action_button("OK", ImVec2(field_width, 0.0f))) {
+              ImGui::CloseCurrentPopup();
+            }
+          }
+
+          const float footer_text_size = 13.5f * uy;
+          const float footer_icon_size = 15.6f * uy;
+          const float footer_spacing_y = 17.0f * uy;
+          const float footer_select_y = overlay_max.y - (32.0f * uy);
+          const float footer_back_y = footer_select_y - footer_spacing_y;
+          const float footer_base_x = overlay_min.x + panel_size.x * 0.9f;
+          const float footer_back_text_x = footer_base_x - (70.0f * ux);
+          const float footer_back_icon_offset = 35.0f * ux;
+          const float footer_select_text_x = footer_base_x - (60.0f * ux);
+          const float footer_select_icon_offset = 42.0f * ux;
+          xe::app::DrawFooterPrompt(action_draw_list, GetOrCreateButtonTexture('B'),
+                                    footer_text_size, footer_icon_size, "Back",
+                                    footer_back_y, footer_back_text_x,
+                                    footer_back_icon_offset);
+          xe::app::DrawFooterPrompt(action_draw_list, GetOrCreateButtonTexture('A'),
+                                    footer_text_size, footer_icon_size, "Select",
+                                    footer_select_y, footer_select_text_x,
+                                    footer_select_icon_offset);
+
+          ImGui::EndPopup();
+        }
+
+        if (show_per_game_config_editor_) {
+          const ImGuiViewport* viewport = ImGui::GetMainViewport();
+          const std::string pergame_header_title =
+              pending_per_game_config_title_display_.empty()
+                  ? std::string("Game Config")
+                  : fmt::format("{} - Game Config", pending_per_game_config_title_display_);
+          std::string guide_asset_path =
+              ResolveConfiguredGuideBackgroundAssetPath(true);
+
+          auto pergame_panel_tex = GetOrCreateImageTexture(guide_asset_path);
+          const float panel_height = io.DisplaySize.y;
+          const float panel_width = std::min(
+              viewport->Size.x,
+              GetGuidePanelSize(pergame_panel_tex, panel_height).x);
+          const ImVec2 panel_size(panel_width, panel_height);
+          const ImVec2 panel_padding(38.0f * display_scale,
+                                     34.0f * display_scale);
+
+          ImGui::SetNextWindowPos(viewport->Pos);
+          ImGui::SetNextWindowSize(viewport->Size);
+          ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+          ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+          ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+          ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0));
+          const ImGuiWindowFlags dim_flags =
+              ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+              ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove |
+              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoInputs |
+              ImGuiWindowFlags_NoCollapse;
+          if (ImGui::Begin("##pergame_config_dim", nullptr, dim_flags)) {
+            ImDrawList* dim_draw_list = ImGui::GetWindowDrawList();
+            const ImVec2 dim_min = ImGui::GetWindowPos();
+            const ImVec2 dim_max =
+                ImVec2(dim_min.x + ImGui::GetWindowSize().x,
+                       dim_min.y + ImGui::GetWindowSize().y);
+            dim_draw_list->AddRectFilled(
+                dim_min, dim_max,
+                ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.55f)));
+          }
+          ImGui::End();
+          ImGui::PopStyleColor();
+          ImGui::PopStyleVar(3);
+
+          if (per_game_config_popup_focus_requested_) {
+            ImGui::SetNextWindowFocus();
+          }
+          ImGui::SetNextWindowPos(viewport->Pos, ImGuiCond_Always);
+          ImGui::SetNextWindowSize(panel_size, ImGuiCond_Always);
+          ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, panel_padding);
+          ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+          ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+          ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0));
+          const ImGuiWindowFlags pergame_overlay_flags =
+              ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+              ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoCollapse |
+              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoMove;
+          bool close_per_game_config_editor = false;
+          if (ImGui::Begin("##pergame_config_overlay", nullptr,
+                           pergame_overlay_flags)) {
+          const ImGuiStyle& pergame_style = ImGui::GetStyle();
+          ImDrawList* pergame_draw_list = ImGui::GetWindowDrawList();
+          const ImVec2 pergame_window_pos = ImGui::GetWindowPos();
+          const ImVec2 pergame_window_size = ImGui::GetWindowSize();
+          const ImVec2 pergame_window_max(
+              pergame_window_pos.x + pergame_window_size.x,
+              pergame_window_pos.y + pergame_window_size.y);
+          DrawGuidePanelBackground(pergame_draw_list, pergame_panel_tex,
+                                   pergame_window_pos, pergame_window_max);
+          if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+              ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            close_per_game_config_editor = true;
+          }
+          const float ux = io.DisplaySize.x / 1024.0f;
+          const float uy = io.DisplaySize.y / 576.0f;
+          const OverlayHeaderLayout pergame_header_layout = DrawOverlayHeader(
+              pergame_draw_list, pergame_window_pos, panel_size, panel_padding, ux,
+              uy, pergame_header_title.c_str());
+          const float pergame_content_left =
+              pergame_window_pos.x + panel_padding.x + (12.0f * display_scale);
+          const float pergame_content_top =
+              pergame_header_layout.position.y + pergame_header_layout.font_size +
+              (36.0f * display_scale) + (30.0f * display_scale);
+
+          const std::string pergame_help_text =
+              "Controller: + add, - remove mode, select option to edit/apply.";
+          const ImVec2 pergame_help_pos(
+              pergame_content_left,
+              pergame_content_top + (0.0f * display_scale));
+          DrawTextWithConfiguredEffect(
+              pergame_draw_list, ImGui::GetFont(), 14.0f * uy,
+              pergame_help_pos, ImGui::GetColorU32(ImGuiCol_Text),
+              pergame_help_text.c_str());
+          ImGui::SetCursorScreenPos(
+              ImVec2(pergame_content_left,
+                     pergame_content_top + (28.0f * display_scale)));
+
+          const float footer_reserved_height =
+              std::max(92.0f * display_scale,
+                       ImGui::GetFrameHeightWithSpacing() +
+                           pergame_style.ItemSpacing.y * 2.0f);
+          const float reduced_footer_height = footer_reserved_height * 2.55f;
+          const float footer_back_icon_right_x =
+              pergame_window_pos.x + panel_size.x * 0.9f - (70.0f * ux) +
+              (35.0f * ux) + ((15.6f * uy) * 0.5f);
+          std::vector<const PerGameConfigOption*> addable_options;
+          addable_options.reserve(per_game_config_options_.size());
+          for (const auto& option : per_game_config_options_) {
+            if (per_game_config_entries_.find(option.name) ==
+                per_game_config_entries_.end()) {
+              addable_options.push_back(&option);
+            }
+          }
+
+          if (per_game_config_add_candidate_.empty() ||
+              std::none_of(addable_options.begin(), addable_options.end(),
+                           [this](const PerGameConfigOption* option) {
+                             return option->name == per_game_config_add_candidate_;
+                           })) {
+            if (!addable_options.empty()) {
+              per_game_config_add_candidate_ = addable_options.front()->name;
+            } else {
+              per_game_config_add_candidate_.clear();
+            }
+          }
+          const bool preview_option_available = std::any_of(
+              addable_options.begin(), addable_options.end(),
+              [this](const PerGameConfigOption* option) {
+                return option->name == per_game_config_add_preview_option_;
+              });
+          if (!preview_option_available) {
+            per_game_config_add_preview_option_ = per_game_config_add_candidate_;
+          }
+
+          const std::string previous_per_game_focus_control =
+              per_game_config_last_focused_control_id_;
+          PerGameConfigFocusSide per_game_focus_side =
+              PerGameConfigFocusSide::kNone;
+          std::string per_game_focus_control_id;
+          bool per_game_focus_has_left_neighbor = false;
+          bool per_game_focus_has_right_neighbor = false;
+          auto track_per_game_focus =
+              [&per_game_focus_side, &per_game_focus_control_id,
+               &per_game_focus_has_left_neighbor,
+               &per_game_focus_has_right_neighbor](PerGameConfigFocusSide side,
+                                                   const std::string& control_id,
+                                                   bool has_left_neighbor,
+                                                   bool has_right_neighbor) {
+                if (!ImGui::IsItemFocused()) {
+                  return;
+                }
+                per_game_focus_side = side;
+                per_game_focus_control_id = control_id;
+                per_game_focus_has_left_neighbor = has_left_neighbor;
+                per_game_focus_has_right_neighbor = has_right_neighbor;
+              };
+          auto focus_if_requested = [this](const std::string& control_id) {
+            if (per_game_config_control_jump_request_ == control_id) {
+              ImGui::SetKeyboardFocusHere();
+              per_game_config_control_jump_request_.clear();
+            }
+          };
+
+          bool per_game_has_configured_options = false;
+          std::string per_game_first_config_entry_control_id;
+          std::string per_game_last_config_entry_control_id;
+          const bool per_game_nav_right_pressed =
+              ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight, false) ||
+              ImGui::IsKeyPressed(ImGuiKey_RightArrow, false);
+          const bool per_game_nav_left_pressed =
+              ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft, false) ||
+              ImGui::IsKeyPressed(ImGuiKey_LeftArrow, false);
+          const bool per_game_nav_down_pressed =
+              ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown, false) ||
+              ImGui::IsKeyPressed(ImGuiKey_DownArrow, false);
+          const bool per_game_nav_up_pressed =
+              ImGui::IsKeyPressed(ImGuiKey_GamepadDpadUp, false) ||
+              ImGui::IsKeyPressed(ImGuiKey_UpArrow, false);
+
+          if (ImGui::BeginChild(
+                  "##pergame_editor_plane",
+                  ImVec2(0.0f, -reduced_footer_height),
+                  ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened,
+                  ImGuiWindowFlags_NoNavFocus)) {
+            if (ImGui::BeginTable("##pergame_layout", 3,
+                                  ImGuiTableFlags_SizingStretchProp)) {
+              ImGui::TableSetupColumn("##pergame_left_col",
+                                      ImGuiTableColumnFlags_WidthFixed, 360.0f);
+              ImGui::TableSetupColumn(
+                  "##pergame_gap_col",
+                  ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize,
+                  18.0f);
+              ImGui::TableSetupColumn("##pergame_right_col",
+                                      ImGuiTableColumnFlags_WidthStretch);
+              ImGui::TableNextColumn();
+              if (per_game_config_popup_focus_requested_ ||
+                  per_game_config_focus_jump_request_ ==
+                      PerGameConfigFocusSide::kLeft) {
+                ImGui::SetKeyboardFocusHere();
+                if (per_game_config_focus_jump_request_ ==
+                    PerGameConfigFocusSide::kLeft) {
+                  per_game_config_focus_jump_request_ =
+                      PerGameConfigFocusSide::kNone;
+                }
+                per_game_config_popup_focus_requested_ = false;
+              }
+              ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+              ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+              ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+              ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+              ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+              focus_if_requested("left_add_button");
+              bool add_button_pressed = ImGui::Button("+##pergame_add_btn", ImVec2(28.0f, 0.0f));
+              bool add_button_highlighted = ImGui::IsItemHovered() || ImGui::IsItemActive() || ImGui::IsItemFocused();
+              ImVec2 add_button_min = ImGui::GetItemRectMin();
+              ImVec2 add_button_max = ImGui::GetItemRectMax();
+              ImGui::PopStyleColor(5);
+              if (add_button_highlighted) {
+                const ImVec4 button_border = GetConfiguredUIAccentColor(0.95f);
+                ImGui::GetWindowDrawList()->AddRect(
+                    add_button_min, add_button_max, ImGui::GetColorU32(button_border),
+                    4.0f, 0, std::max(1.5f, 2.0f * display_scale));
+              }
+              ImVec2 add_text_size = ImGui::CalcTextSize("+");
+              ImVec2 add_text_pos(
+                  add_button_min.x + (add_button_max.x - add_button_min.x - add_text_size.x) * 0.5f,
+                  add_button_min.y + (add_button_max.y - add_button_min.y - add_text_size.y) * 0.5f);
+              DrawTextWithConfiguredEffect(
+                  ImGui::GetWindowDrawList(), ImGui::GetFont(), ImGui::GetFontSize(),
+                  add_text_pos, IM_COL32(255, 255, 255, 255), "+");
+              if (add_button_pressed && !per_game_config_add_candidate_.empty()) {
+                add_or_update_per_game_entry(per_game_config_add_candidate_, "");
+                selected_per_game_config_option_ = per_game_config_add_candidate_;
+                per_game_config_remove_mode_ = false;
+                per_game_config_add_preview_option_ = per_game_config_add_candidate_;
+              }
+              track_per_game_focus(PerGameConfigFocusSide::kLeft, "left_add_button",
+                                  false, true);
+
+              ImGui::SameLine();
+            std::string add_label = per_game_config_add_candidate_.empty()
+                                        ? "No more options"
+                                        : per_game_config_add_candidate_;
+            const float add_combo_width = ImGui::CalcItemWidth() * 1.3f;
+            ImGui::SetNextItemWidth(add_combo_width);
+            ImGui::PushStyleColor(ImGuiCol_Text,
+                                  ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+            focus_if_requested("left_add_combo");
+            const bool add_combo_open =
+                ImGui::BeginCombo("##pergame_add", add_label.c_str());
+            if (add_combo_open) {
+              for (const auto* option : addable_options) {
+                bool selected =
+                    per_game_config_add_candidate_ == option->name;
+                std::string option_label =
+                    fmt::format("[{}] {}", option->category, option->name);
+                ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+                ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+                ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+                bool item_clicked = ImGui::Selectable(("##" + option_label).c_str(), selected);
+                bool item_highlighted = ImGui::IsItemHovered() || ImGui::IsItemActive();
+                ImVec2 item_min = ImGui::GetItemRectMin();
+                ImVec2 item_max = ImGui::GetItemRectMax();
+                ImGui::PopStyleColor(3);
+                if (item_highlighted || selected) {
+                  const ImVec4 item_border = GetConfiguredUIAccentColor(selected ? 0.95f : 0.75f);
+                  ImGui::GetWindowDrawList()->AddRect(
+                      item_min, item_max, ImGui::GetColorU32(item_border), 4.0f, 0, 1.0f);
+                }
+                DrawTextWithConfiguredEffect(
+                    ImGui::GetWindowDrawList(), ImGui::GetFont(), ImGui::GetFontSize(),
+                    ImVec2(item_min.x + ImGui::GetStyle().FramePadding.x, item_min.y + ImGui::GetStyle().FramePadding.y),
+                    IM_COL32(255, 255, 255, 255), option_label.c_str());
+                if (item_highlighted) {
+                  per_game_config_add_preview_option_ = option->name;
+                }
+                if (item_clicked) {
+                  per_game_config_add_candidate_ = option->name;
+                  per_game_config_add_preview_option_ = option->name;
+                }
+                if (selected) {
+                  ImGui::SetItemDefaultFocus();
+                }
+              }
+              ImGui::EndCombo();
+            }
+            ImGui::PopStyleColor();
+
+            const ImVec2 add_combo_min = ImGui::GetItemRectMin();
+            const ImVec2 add_combo_max = ImGui::GetItemRectMax();
+            const bool add_combo_highlighted = ImGui::IsItemHovered() ||
+                                               ImGui::IsItemActive() ||
+                                               ImGui::IsItemFocused() ||
+                                               add_combo_open;
+            if (add_combo_highlighted) {
+              const ImVec4 combo_border = GetConfiguredUIAccentColor(0.95f);
+              ImGui::GetWindowDrawList()->AddRect(
+                  add_combo_min, add_combo_max, ImGui::GetColorU32(combo_border),
+                  ImGui::GetStyle().FrameRounding,
+                  0, std::max(1.5f, 2.0f * display_scale));
+            }
+            const ImVec2 add_combo_text_pos(
+                add_combo_min.x + ImGui::GetStyle().FramePadding.x,
+                add_combo_min.y +
+                    (add_combo_max.y - add_combo_min.y -
+                     ImGui::GetTextLineHeight()) * 0.5f);
+            DrawTextWithConfiguredEffect(
+                ImGui::GetWindowDrawList(), ImGui::GetFont(), ImGui::GetFontSize(),
+                add_combo_text_pos, ImGui::GetColorU32(ImGuiCol_Text),
+                add_label.c_str());
+            const float add_combo_arrow_size =
+                std::max(5.0f * display_scale, ImGui::GetFontSize() * 0.45f);
+            const float add_combo_arrow_center_x =
+                add_combo_max.x - ImGui::GetStyle().FramePadding.x -
+                add_combo_arrow_size;
+            const float add_combo_arrow_center_y =
+                add_combo_min.y + (add_combo_max.y - add_combo_min.y) * 0.5f +
+                (1.0f * display_scale);
+            const ImU32 add_combo_arrow_color =
+                UseDarkAccentComboText() ? IM_COL32(0, 0, 0, 255)
+                                         : ImGui::GetColorU32(ImGuiCol_Text);
+            ImGui::GetWindowDrawList()->AddTriangleFilled(
+                ImVec2(add_combo_arrow_center_x - add_combo_arrow_size,
+                       add_combo_arrow_center_y - add_combo_arrow_size * 0.5f),
+                ImVec2(add_combo_arrow_center_x + add_combo_arrow_size,
+                       add_combo_arrow_center_y - add_combo_arrow_size * 0.5f),
+                ImVec2(add_combo_arrow_center_x,
+                       add_combo_arrow_center_y + add_combo_arrow_size * 0.5f),
+                add_combo_arrow_color);
+            track_per_game_focus(PerGameConfigFocusSide::kLeft,
+                                "left_add_combo",
+                                true, true);
+
+            ImGui::SameLine();
+            if (per_game_config_remove_mode_) {
+              ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.80f, 0.20f, 0.20f, 1.00f));
+              ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                                    ImVec4(0.90f, 0.28f, 0.28f, 1.00f));
+              ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                                    ImVec4(0.95f, 0.35f, 0.35f, 1.00f));
+            }
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+            ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+            focus_if_requested("left_remove_mode_button");
+            bool remove_button_pressed = ImGui::Button("-##pergame_remove_btn", ImVec2(28.0f, 0.0f));
+            bool remove_button_highlighted = ImGui::IsItemHovered() || ImGui::IsItemActive() || ImGui::IsItemFocused();
+            ImVec2 remove_button_min = ImGui::GetItemRectMin();
+            ImVec2 remove_button_max = ImGui::GetItemRectMax();
+            ImGui::PopStyleColor(5);
+            if (remove_button_highlighted) {
+              const ImVec4 button_border = GetConfiguredUIAccentColor(0.95f);
+              ImGui::GetWindowDrawList()->AddRect(
+                  remove_button_min, remove_button_max, ImGui::GetColorU32(button_border),
+                  4.0f, 0, std::max(1.5f, 2.0f * display_scale));
+            }
+            ImVec2 remove_text_size = ImGui::CalcTextSize("-");
+            ImVec2 remove_text_pos(
+                remove_button_min.x + (remove_button_max.x - remove_button_min.x - remove_text_size.x) * 0.5f,
+                remove_button_min.y + (remove_button_max.y - remove_button_min.y - remove_text_size.y) * 0.5f);
+            DrawTextWithConfiguredEffect(
+                ImGui::GetWindowDrawList(), ImGui::GetFont(), ImGui::GetFontSize(),
+                remove_text_pos, IM_COL32(255, 255, 255, 255), "-");
+            if (remove_button_pressed) {
+              per_game_config_remove_mode_ = !per_game_config_remove_mode_;
+            }
+            track_per_game_focus(PerGameConfigFocusSide::kLeft,
+                                "left_remove_mode_button", true, false);
+            if (per_game_config_remove_mode_) {
+              ImGui::PopStyleColor(3);
+            }
+
+            const std::string pergame_list_header = fmt::format(
+                "Configured options ({}){}" , per_game_config_entries_.size(),
+                per_game_config_remove_mode_ ? " - remove mode active" : "");
+            const ImVec2 pergame_list_header_pos = ImGui::GetCursorScreenPos();
+            DrawTextWithConfiguredEffect(
+                ImGui::GetWindowDrawList(), ImGui::GetFont(), ImGui::GetFontSize(),
+                pergame_list_header_pos, ImGui::GetColorU32(ImGuiCol_Text),
+                pergame_list_header.c_str());
+            const ImVec2 pergame_list_header_size = ImGui::CalcTextSize(
+                pergame_list_header.c_str());
+            ImGui::Dummy(pergame_list_header_size);
+
+            std::vector<std::string> configured_option_names;
+            configured_option_names.reserve(per_game_config_entries_.size());
+            for (const auto& entry : per_game_config_entries_) {
+              configured_option_names.push_back(entry.first);
+            }
+            std::sort(configured_option_names.begin(), configured_option_names.end());
+            if (!configured_option_names.empty()) {
+              per_game_has_configured_options = true;
+              per_game_first_config_entry_control_id =
+                  fmt::format("left_config_entry_{}", configured_option_names.front());
+              per_game_last_config_entry_control_id =
+                  fmt::format("left_config_entry_{}", configured_option_names.back());
+            }
+
+            for (const auto& option_name : configured_option_names) {
+              bool is_selected = selected_per_game_config_option_ == option_name;
+              std::string entry_control_id =
+                  fmt::format("left_config_entry_{}", option_name);
+              std::string label = fmt::format("{}##pergame_entry_{}", option_name,
+                                              option_name);
+              const ImGuiStyle& selectable_style = ImGui::GetStyle();
+              ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+              ImGui::PushStyleColor(ImGuiCol_HeaderHovered,
+                                    ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+              ImGui::PushStyleColor(ImGuiCol_HeaderActive,
+                                    ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+              ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+              ImGui::PushStyleColor(ImGuiCol_NavCursor,
+                                    ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+              focus_if_requested(entry_control_id);
+              bool clicked = ImGui::Selectable(label.c_str(), is_selected);
+              bool highlighted = ImGui::IsItemHovered() || ImGui::IsItemActive() ||
+                                 ImGui::IsItemFocused();
+              ImVec2 item_min = ImGui::GetItemRectMin();
+              ImVec2 item_max = ImGui::GetItemRectMax();
+              ImGui::PopStyleColor(5);
+              const float border_thickness = std::max(1.0f, 2.0f * display_scale);
+              if (highlighted || is_selected) {
+                const ImVec4 entry_border =
+                    GetConfiguredUIAccentColor(is_selected ? 1.0f : 0.75f);
+                const float border_inset_x =
+                    std::max(border_thickness, selectable_style.FramePadding.x);
+                const float border_inset_y = border_thickness * 0.5f;
+                ImGui::GetWindowDrawList()->AddRect(
+                    ImVec2(item_min.x + border_inset_x,
+                           item_min.y + border_inset_y),
+                    ImVec2(item_max.x - border_inset_x,
+                           item_max.y - border_inset_y),
+                    ImGui::GetColorU32(entry_border), 4.0f, 0, border_thickness);
+              }
+              const float line_height = ImGui::GetTextLineHeight();
+              const ImVec2 text_pos(item_min.x + selectable_style.FramePadding.x,
+                                    item_min.y +
+                                        (item_max.y - item_min.y - line_height) * 0.5f);
+              DrawTextWithConfiguredEffect(ImGui::GetWindowDrawList(), ImGui::GetFont(),
+                                           ImGui::GetFontSize(), text_pos,
+                                           ImGui::GetColorU32(ImGuiCol_Text),
+                                           option_name.c_str());
+              bool removed_option = false;
+              if (clicked) {
+                if (per_game_config_remove_mode_) {
+                  per_game_config_entries_.erase(option_name);
+                  removed_option = true;
+                  if (selected_per_game_config_option_ == option_name) {
+                    selected_per_game_config_option_.clear();
+                  }
+                } else {
+                  selected_per_game_config_option_ = option_name;
+                }
+              }
+              if (!removed_option && ImGui::IsItemFocused() &&
+                  selected_per_game_config_option_ != option_name) {
+                selected_per_game_config_option_ = option_name;
+                per_game_config_add_preview_option_.clear();
+              }
+              track_per_game_focus(PerGameConfigFocusSide::kLeft,
+                                  entry_control_id,
+                                  false, false);
+            }
+            ImGui::TableNextColumn();
+            ImGui::TableNextColumn();
+
+            const bool right_column_has_selection =
+                !per_game_config_add_preview_option_.empty() ||
+                (!selected_per_game_config_option_.empty() &&
+                 per_game_config_entries_.find(selected_per_game_config_option_) !=
+                     per_game_config_entries_.end());
+            if (per_game_config_focus_jump_request_ ==
+                    PerGameConfigFocusSide::kRight &&
+                right_column_has_selection) {
+              ImGui::SetKeyboardFocusHere();
+              per_game_config_focus_jump_request_ =
+                  PerGameConfigFocusSide::kNone;
+            }
+
+            const bool has_selected_entry =
+                !selected_per_game_config_option_.empty() &&
+                per_game_config_entries_.find(selected_per_game_config_option_) !=
+                    per_game_config_entries_.end();
+            const PerGameConfigOption* add_preview_option =
+                per_game_config_add_preview_option_.empty()
+                    ? nullptr
+                    : find_per_game_option(
+                          per_game_config_add_preview_option_);
+            const bool add_preview_has_priority =
+                add_preview_option &&
+                (add_combo_open || per_game_focus_control_id == "left_add_combo");
+            const PerGameConfigOption* active_pergame_option = nullptr;
+            std::string active_pergame_value;
+            if (add_preview_has_priority) {
+              active_pergame_option = add_preview_option;
+              active_pergame_value = add_preview_option->default_value;
+            } else if (has_selected_entry) {
+              active_pergame_option =
+                  find_per_game_option(selected_per_game_config_option_);
+              active_pergame_value =
+                  per_game_config_entries_.find(selected_per_game_config_option_)
+                      ->second.value;
+            }
+            auto apply_per_game_value_change =
+                [this, &active_pergame_option, &active_pergame_value,
+                 &add_or_update_per_game_entry](const std::string& next_value) {
+                  if (!active_pergame_option) {
+                    return;
+                  }
+                  add_or_update_per_game_entry(active_pergame_option->name,
+                                               next_value);
+                  selected_per_game_config_option_ = active_pergame_option->name;
+                  active_pergame_value = next_value;
+                };
+
+            auto draw_wrapped_pergame_right_text =
+                [&footer_back_icon_right_x](const std::string& text) {
+                  const ImVec2 text_pos = ImGui::GetCursorScreenPos();
+                  const float wrap_width =
+                      std::max(0.0f, footer_back_icon_right_x - text_pos.x);
+                  DrawTextWithConfiguredEffect(
+                      ImGui::GetWindowDrawList(), ImGui::GetFont(),
+                      ImGui::GetFontSize(), text_pos,
+                      ImGui::GetColorU32(ImGuiCol_Text), text.c_str(),
+                      wrap_width);
+                  const ImVec2 text_size =
+                      ImGui::CalcTextSize(text.c_str(), nullptr, false,
+                                          wrap_width);
+                  ImGui::Dummy(text_size);
+                };
+
+            if (!active_pergame_option) {
+              const std::string pergame_placeholder_text =
+                  "Select a configured option to edit its value.";
+              draw_wrapped_pergame_right_text(pergame_placeholder_text);
+            } else {
+              auto* option = active_pergame_option;
+
+              if (option) {
+                const std::string pergame_category_text =
+                    fmt::format("Category: {}", option->category);
+                draw_wrapped_pergame_right_text(pergame_category_text);
+                if (!option->description.empty()) {
+                  ImGui::Separator();
+                  draw_wrapped_pergame_right_text(option->description);
+                }
+              }
+
+              ImGui::Separator();
+              const std::string pergame_value_text =
+                  fmt::format("Current value: {}", active_pergame_value);
+              draw_wrapped_pergame_right_text(pergame_value_text);
+
+              if (option && !option->enum_values.empty()) {
+                ImGui::Separator();
+                const std::string pergame_choose_text = "Choose value:";
+                draw_wrapped_pergame_right_text(pergame_choose_text);
+                for (const auto& enum_value_raw : option->enum_values) {
+                  std::string normalized =
+                      canonicalize_per_game_value(*option, enum_value_raw);
+                  std::string display = enum_value_raw.empty()
+                                            ? "(empty/default)"
+                                            : enum_value_raw;
+                  if (option->name == "user_language") {
+                    if (normalized == "1") {
+                      display = "English (1)";
+                    } else if (normalized == "2") {
+                      display = "Japanese (2)";
+                    } else if (normalized == "3") {
+                      display = "German (3)";
+                    } else if (normalized == "4") {
+                      display = "French (4)";
+                    } else if (normalized == "5") {
+                      display = "Spanish (5)";
+                    } else if (normalized == "6") {
+                      display = "Italian (6)";
+                    } else if (normalized == "7") {
+                      display = "Korean (7)";
+                    } else if (normalized == "8") {
+                      display = "Traditional Chinese (8)";
+                    } else if (normalized == "9") {
+                      display = "Portuguese (9)";
+                    } else if (normalized == "10") {
+                      display = "Simplified Chinese (10)";
+                    } else if (normalized == "11") {
+                      display = "Polish (11)";
+                    } else if (normalized == "12") {
+                      display = "Russian (12)";
+                    }
+                  }
+                  bool selected = active_pergame_value == normalized;
+                  std::string button_label =
+                      fmt::format("{}##enum_{}_{}", display, option->name,
+                                  normalized);
+                  ImGui::PushStyleColor(ImGuiCol_Header,
+                                        ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+                  ImGui::PushStyleColor(ImGuiCol_HeaderHovered,
+                                        ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+                  ImGui::PushStyleColor(ImGuiCol_HeaderActive,
+                                        ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+                  ImGui::PushStyleColor(ImGuiCol_Text,
+                                        ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+                  ImGui::PushStyleColor(ImGuiCol_NavCursor,
+                                        ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+                  bool clicked = ImGui::Selectable(button_label.c_str(), selected);
+                  bool highlighted = ImGui::IsItemHovered() || ImGui::IsItemActive() ||
+                                     ImGui::IsItemFocused();
+                  ImVec2 item_min = ImGui::GetItemRectMin();
+                  ImVec2 item_max = ImGui::GetItemRectMax();
+                  ImGui::PopStyleColor(5);
+                  const float entry_border_thickness =
+                      std::max(1.0f, 2.0f * display_scale);
+                  if (highlighted || selected) {
+                    const ImVec4 entry_border =
+                        GetConfiguredUIAccentColor(selected ? 1.0f : 0.75f);
+                    ImGui::GetWindowDrawList()->AddRect(
+                        item_min, item_max, ImGui::GetColorU32(entry_border), 4.0f,
+                        0, entry_border_thickness);
+                  }
+                  const float line_height = ImGui::GetTextLineHeight();
+                  const ImVec2 text_pos(
+                      item_min.x + ImGui::GetStyle().FramePadding.x,
+                      item_min.y + (item_max.y - item_min.y - line_height) * 0.5f);
+                  DrawTextWithConfiguredEffect(
+                      ImGui::GetWindowDrawList(), ImGui::GetFont(),
+                      ImGui::GetFontSize(), text_pos,
+                      ImGui::GetColorU32(ImGuiCol_Text), display.c_str());
+                  if (clicked) {
+                    apply_per_game_value_change(normalized);
+                  }
+                  track_per_game_focus(
+                      PerGameConfigFocusSide::kRight,
+                      fmt::format("right_enum_{}_{}", option->name, normalized),
+                      false, false);
+                }
+              } else if (option && option->value_type == PerGameConfigValueType::kBool) {
+                bool bool_value = (active_pergame_value == "true");
+                if (ImGui::Button(bool_value ? "Set false" : "Set true")) {
+                  std::string next_value = bool_value ? "false" : "true";
+                  apply_per_game_value_change(next_value);
+                }
+                track_per_game_focus(PerGameConfigFocusSide::kRight,
+                                    "right_bool_toggle", false, false);
+              } else if (option && (option->value_type == PerGameConfigValueType::kInt ||
+                                    option->value_type == PerGameConfigValueType::kUInt ||
+                                    option->value_type == PerGameConfigValueType::kUInt64)) {
+                int64_t current_value = 0;
+                try {
+                  current_value = std::stoll(active_pergame_value);
+                } catch (...) {
+                  current_value = 0;
+                }
+                auto apply_int_delta = [option, &current_value,
+                                        &apply_per_game_value_change](int delta) {
+                  int64_t next = current_value + delta;
+                  if ((option->value_type == PerGameConfigValueType::kUInt ||
+                       option->value_type == PerGameConfigValueType::kUInt64) &&
+                      next < 0) {
+                    next = 0;
+                  }
+                  apply_per_game_value_change(fmt::format("{}", next));
+                  current_value = next;
+                };
+
+                if (ImGui::Button("-10", ImVec2(58.0f, 0.0f))) {
+                  apply_int_delta(-10);
+                }
+                track_per_game_focus(PerGameConfigFocusSide::kRight,
+                                    fmt::format("right_int_delta_{}_{}", option->name,
+                                                -10),
+                                    false, true);
+
+                ImGui::SameLine();
+                if (ImGui::Button("-1", ImVec2(58.0f, 0.0f))) {
+                  apply_int_delta(-1);
+                }
+                track_per_game_focus(PerGameConfigFocusSide::kRight,
+                                    fmt::format("right_int_delta_{}_{}", option->name,
+                                                -1),
+                                    true, true);
+
+                ImGui::SameLine();
+                const std::string pergame_int_value_text =
+                    fmt::format("{}", static_cast<long long>(current_value));
+                const ImVec2 pergame_int_value_pos = ImGui::GetCursorScreenPos();
+                DrawTextWithConfiguredEffect(
+                    ImGui::GetWindowDrawList(), ImGui::GetFont(), ImGui::GetFontSize(),
+                    pergame_int_value_pos, ImGui::GetColorU32(ImGuiCol_Text),
+                    pergame_int_value_text.c_str());
+                const ImVec2 pergame_int_value_size =
+                    ImGui::CalcTextSize(pergame_int_value_text.c_str());
+                ImGui::Dummy(ImVec2(pergame_int_value_size.x, 0.0f));
+
+                ImGui::SameLine();
+                if (ImGui::Button("+1", ImVec2(58.0f, 0.0f))) {
+                  apply_int_delta(1);
+                }
+                track_per_game_focus(PerGameConfigFocusSide::kRight,
+                                    fmt::format("right_int_delta_{}_{}", option->name,
+                                                1),
+                                    true, true);
+
+                ImGui::SameLine();
+                if (ImGui::Button("+10", ImVec2(58.0f, 0.0f))) {
+                  apply_int_delta(10);
+                }
+                track_per_game_focus(PerGameConfigFocusSide::kRight,
+                                    fmt::format("right_int_delta_{}_{}", option->name,
+                                                10),
+                                    true, false);
+              } else if (option && option->value_type == PerGameConfigValueType::kDouble) {
+                double current_value = 0.0;
+                try {
+                  current_value = std::stod(active_pergame_value);
+                } catch (...) {
+                  current_value = 0.0;
+                }
+                const double deltas[] = {-1.0, -0.1, 0.1, 1.0};
+                for (size_t i = 0; i < std::size(deltas); ++i) {
+                  double delta = deltas[i];
+                  std::string label = fmt::format("{:+.1f}", delta);
+                  if (ImGui::Button(label.c_str(), ImVec2(58.0f, 0.0f))) {
+                    double next = current_value + delta;
+                    apply_per_game_value_change(fmt::format("{}", next));
+                    current_value = next;
+                  }
+                  track_per_game_focus(
+                      PerGameConfigFocusSide::kRight,
+                      fmt::format("right_double_delta_{}_{}", option->name, i),
+                      i != 0, false);
+                  if (i + 1 != std::size(deltas)) {
+                    ImGui::SameLine();
+                  }
+                }
+              } else {
+                const std::string pergame_fallback_text =
+                    "No controller preset editor for this type yet. Use default/reset or known enums.";
+                draw_wrapped_pergame_right_text(pergame_fallback_text);
+                if (option &&
+                    (option->value_type == PerGameConfigValueType::kString ||
+                     option->value_type == PerGameConfigValueType::kPath) &&
+                    ImGui::Button("Set Empty")) {
+                  apply_per_game_value_change("\"\"");
+                }
+                track_per_game_focus(PerGameConfigFocusSide::kRight,
+                                    "right_set_empty", false, false);
+              }
+
+              if (option) {
+                ImGui::Separator();
+                if (ImGui::Button("Reset To Default")) {
+                  apply_per_game_value_change(option->default_value);
+                }
+                track_per_game_focus(PerGameConfigFocusSide::kRight,
+                                    "right_reset_default", false, false);
+              }
+            }
+
+            if (per_game_nav_right_pressed &&
+                per_game_focus_side == PerGameConfigFocusSide::kLeft &&
+                !per_game_focus_has_right_neighbor &&
+                !per_game_focus_control_id.empty() &&
+                per_game_focus_control_id == previous_per_game_focus_control &&
+                right_column_has_selection) {
+              per_game_config_focus_jump_request_ =
+                  PerGameConfigFocusSide::kRight;
+            } else if (per_game_nav_left_pressed &&
+                       per_game_focus_side == PerGameConfigFocusSide::kRight &&
+                       !per_game_focus_has_left_neighbor &&
+                       !per_game_focus_control_id.empty() &&
+                       per_game_focus_control_id ==
+                           previous_per_game_focus_control) {
+              per_game_config_focus_jump_request_ =
+                  PerGameConfigFocusSide::kLeft;
+            }
+
+            const bool focus_on_top_controls =
+                per_game_focus_control_id == "left_add_button" ||
+                per_game_focus_control_id == "left_add_combo" ||
+                per_game_focus_control_id == "left_remove_mode_button";
+            const bool focus_on_first_config_entry =
+                per_game_has_configured_options &&
+                per_game_focus_control_id ==
+                    per_game_first_config_entry_control_id;
+            const bool focus_on_last_config_entry =
+                per_game_has_configured_options &&
+                per_game_focus_control_id ==
+                    per_game_last_config_entry_control_id;
+
+            if (per_game_nav_down_pressed) {
+              if (focus_on_top_controls) {
+                if (per_game_has_configured_options) {
+                  per_game_config_control_jump_request_ =
+                      per_game_first_config_entry_control_id;
+                } else {
+                  per_game_config_control_jump_request_ = "left_apply_button";
+                }
+              } else if (focus_on_last_config_entry) {
+                per_game_config_control_jump_request_ = "left_apply_button";
+              }
+            }
+
+            if (per_game_nav_up_pressed && focus_on_first_config_entry) {
+              per_game_config_control_jump_request_ = "left_add_combo";
+            }
+
+            per_game_config_last_focused_control_id_ = per_game_focus_control_id;
+            ImGui::EndTable();
+            }
+
+            ImGui::EndChild();
+          }
+
+          ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y));
+
+          ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+          ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+          ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                                ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+          ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                                ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+          ImGui::PushStyleColor(ImGuiCol_NavCursor,
+                                ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+          focus_if_requested("left_apply_button");
+          bool apply_button_pressed = ImGui::Button("Apply##pergame_apply");
+          bool apply_button_highlighted =
+              ImGui::IsItemHovered() || ImGui::IsItemActive() ||
+              ImGui::IsItemFocused();
+          ImVec2 apply_button_min = ImGui::GetItemRectMin();
+          ImVec2 apply_button_max = ImGui::GetItemRectMax();
+          ImGui::PopStyleColor(5);
+          if (apply_button_highlighted) {
+            const ImVec4 button_border = GetConfiguredUIAccentColor(0.95f);
+            ImGui::GetWindowDrawList()->AddRect(
+                apply_button_min, apply_button_max,
+                ImGui::GetColorU32(button_border), 8.0f * display_scale, 0,
+                std::max(1.5f, 2.0f * display_scale));
+          }
+          ImVec2 apply_text_size = ImGui::CalcTextSize("Apply");
+          ImVec2 apply_text_pos(
+              apply_button_min.x +
+                  (apply_button_max.x - apply_button_min.x - apply_text_size.x) *
+                      0.5f,
+              apply_button_min.y +
+                  (apply_button_max.y - apply_button_min.y - apply_text_size.y) *
+                      0.5f);
+          DrawTextWithConfiguredEffect(
+              ImGui::GetWindowDrawList(), ImGui::GetFont(),
+              ImGui::GetFontSize(), apply_text_pos,
+              IM_COL32(255, 255, 255, 255), "Apply");
+          track_per_game_focus(PerGameConfigFocusSide::kLeft,
+                               "left_apply_button", false, true);
+          if (apply_button_pressed) {
+            std::error_code mkdir_ec;
+            std::filesystem::create_directories(
+                pending_per_game_config_path_.parent_path(), mkdir_ec);
+            if (mkdir_ec) {
+              action_status_ = fmt::format(
+                  "Failed to create config directory: {}", mkdir_ec.message());
+              action_popup_mode_ = ActionPopupMode::kInfo;
+              show_action_status_ = true;
+            } else {
+              std::ofstream ofs(pending_per_game_config_path_, std::ios::binary);
+              if (!ofs.is_open()) {
+                action_status_ =
+                    "Failed to write per-game config file (open failed).";
+              } else {
+                std::string generated_config = build_per_game_config_text();
+                std::memset(per_game_config_buffer_, 0,
+                            sizeof(per_game_config_buffer_));
+                xe::string_util::copy_truncating(per_game_config_buffer_,
+                                                 generated_config,
+                                                 sizeof(per_game_config_buffer_));
+                ofs.write(generated_config.data(), generated_config.size());
+                ofs.close();
+
+                if (apply_per_game_config(pending_per_game_config_title_id_,
+                                          pending_per_game_config_path_)) {
+                  action_status_ = fmt::format(
+                      "Per-game config saved and applied for {}.",
+                      pending_per_game_config_title_id_);
+                } else {
+                  action_status_ =
+                      "Per-game config saved, but apply failed (check xenia.log).";
+                }
+              }
+              action_popup_mode_ = ActionPopupMode::kInfo;
+              show_action_status_ = true;
+            }
+            close_per_game_config_editor = true;
+          }
+
+          ImGui::SameLine();
+          ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+          ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+          ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                                ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+          ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                                ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+          ImGui::PushStyleColor(ImGuiCol_NavCursor,
+                                ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+          focus_if_requested("left_cancel_button");
+          bool cancel_button_pressed = ImGui::Button("Cancel##pergame_cancel");
+          bool cancel_button_highlighted =
+              ImGui::IsItemHovered() || ImGui::IsItemActive() ||
+              ImGui::IsItemFocused();
+          ImVec2 cancel_button_min = ImGui::GetItemRectMin();
+          ImVec2 cancel_button_max = ImGui::GetItemRectMax();
+          ImGui::PopStyleColor(5);
+          if (cancel_button_highlighted) {
+            const ImVec4 button_border = GetConfiguredUIAccentColor(0.95f);
+            ImGui::GetWindowDrawList()->AddRect(
+                cancel_button_min, cancel_button_max,
+                ImGui::GetColorU32(button_border), 8.0f * display_scale, 0,
+                std::max(1.5f, 2.0f * display_scale));
+          }
+          ImVec2 cancel_text_size = ImGui::CalcTextSize("Cancel");
+          ImVec2 cancel_text_pos(
+              cancel_button_min.x +
+                  (cancel_button_max.x - cancel_button_min.x -
+                   cancel_text_size.x) *
+                      0.5f,
+              cancel_button_min.y +
+                  (cancel_button_max.y - cancel_button_min.y -
+                   cancel_text_size.y) *
+                      0.5f);
+          DrawTextWithConfiguredEffect(
+              ImGui::GetWindowDrawList(), ImGui::GetFont(),
+              ImGui::GetFontSize(), cancel_text_pos,
+              IM_COL32(255, 255, 255, 255), "Cancel");
+          track_per_game_focus(PerGameConfigFocusSide::kLeft,
+                               "left_cancel_button", true, false);
+          if (cancel_button_pressed) {
+            close_per_game_config_editor = true;
+          }
+
+          const bool focus_on_footer_controls =
+              per_game_focus_control_id == "left_apply_button" ||
+              per_game_focus_control_id == "left_cancel_button";
+          if (per_game_nav_up_pressed && focus_on_footer_controls) {
+            if (per_game_has_configured_options) {
+              per_game_config_control_jump_request_ =
+                  per_game_last_config_entry_control_id;
+            } else {
+              per_game_config_control_jump_request_ = "left_add_combo";
+            }
+          } else if (per_game_nav_down_pressed && focus_on_footer_controls) {
+            per_game_config_control_jump_request_ = per_game_focus_control_id;
+          }
+
+          const float footer_text_size = 13.5f * uy;
+          const float footer_icon_size = 15.6f * uy;
+          const float footer_spacing_y = 17.0f * uy;
+          const float footer_select_y = pergame_window_max.y - (32.0f * uy);
+          const float footer_back_y = footer_select_y - footer_spacing_y;
+          const float footer_base_x = pergame_window_pos.x + panel_size.x * 0.9f;
+          const float footer_back_text_x = footer_base_x - (70.0f * ux);
+          const float footer_back_icon_offset = 35.0f * ux;
+          const float footer_select_text_x = footer_base_x - (60.0f * ux);
+          const float footer_select_icon_offset = 42.0f * ux;
+          xe::app::DrawFooterPrompt(
+              pergame_draw_list, GetOrCreateButtonTexture('B'),
+              footer_text_size, footer_icon_size, "Back", footer_back_y,
+              footer_back_text_x, footer_back_icon_offset);
+          xe::app::DrawFooterPrompt(
+              pergame_draw_list, GetOrCreateButtonTexture('A'),
+              footer_text_size, footer_icon_size, "Select", footer_select_y,
+              footer_select_text_x, footer_select_icon_offset);
+        }
+
+          ImGui::End();
+          ImGui::PopStyleColor();
+          ImGui::PopStyleVar(3);
+          if (close_per_game_config_editor) {
+            show_per_game_config_editor_ = false;
+            per_game_config_popup_focus_requested_ = false;
+            per_game_config_focus_jump_request_ =
+                PerGameConfigFocusSide::kNone;
+            per_game_config_control_jump_request_.clear();
+            gamelist_window_focus_requested = true;
+            gamelist_focus_selected_request = true;
+          }
+        }
+
+        if (request_launch_selected_game && !launch_game_path.empty()) {
+          launch_after_draw = true;
+          launch_path_after_draw = launch_game_path;
+        }
+
+        gamelist_x_was_down = controller_x_down;
+        gamelist_b_was_down = controller_b_down;
+
+      }
+      if (!game_list_tab_open) {
+        gamelist_x_was_down = false;
+        gamelist_b_was_down = false;
+        show_search_panel_ = false;
+        search_panel_focus_input_requested_ = false;
+        search_panel_list_focus_requested_ = false;
+        search_gamepad_y_was_down_ = false;
+      }
+      game_list_tab_was_open = game_list_tab_open;
+      settings_tab_was_open = settings_tab_open;
+      paths_tab_was_open = paths_tab_open;
+      about_tab_was_open = about_tab_open;
+
+      if (active_frontend_page_ == FrontendPage::kSettings) {
+        std::string tooltip =
+            "Note: Xenia-Canary is a WIP emulator.\nMost settings should be "
+            "considered hacks, and may cause (or fix) crashes and other "
+            "problems. Edit these settings at your own risk.";
+
+        static const char* k_settings_sections[] = {
+            "General",      "D3D12", "Display", "GPU",
+            "Audio",        "Memory", "Storage", "UI",
+            "x64",          "Video", "HID", "Command Line",
+        };
+
+        if (!ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) &&
+            ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
+          settings_focus_requested = true;
+        }
+
+        const bool settings_nav_left_pressed =
+            ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft, false) ||
+            ImGui::IsKeyPressed(ImGuiKey_LeftArrow, false);
+        if (!ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) &&
+            settings_focus_on_right && settings_nav_left_pressed &&
+            !ImGui::IsAnyItemActive()) {  // Don't switch left if any item (like slider) is active
+          settings_focus_requested = true;
+          settings_focus_right_requested = false;
+          settings_focus_on_right = false;
+        }
+
+        const float settings_plane_margin = 40.0f;
+        ImVec2 settings_plane_origin = ImGui::GetCursorPos();
+        ImVec2 settings_plane_avail = ImGui::GetContentRegionAvail();
+        ImVec2 settings_plane_size(
+            std::max(0.0f,
+                     settings_plane_avail.x - (settings_plane_margin * 2.0f)),
+            std::max(0.0f,
+                     settings_plane_avail.y - (settings_plane_margin * 2.0f)));
+        ImGui::SetCursorPos(
+            ImVec2(settings_plane_origin.x + settings_plane_margin,
+                   settings_plane_origin.y + settings_plane_margin));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        if (ImGui::BeginChild("##settings_editor_plane", settings_plane_size,
+                              false)) {
+          const float settings_content_offset_x = 15.0f * display_scale;
+          ImGui::Indent(settings_content_offset_x);
+          if (settings_focus_requested) {
+            ImGui::SetWindowFocus();
+          }
+          if (ImGui::BeginTable("##settings_layout", 3,
+                                ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("##settings_left_col",
+                                    ImGuiTableColumnFlags_WidthFixed, 370.0f);
+            ImGui::TableSetupColumn(
+                "##settings_gap_col",
+                ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize,
+                86.0f);
+            ImGui::TableSetupColumn("##settings_right_col",
+                                    ImGuiTableColumnFlags_WidthStretch, 1.0f);
+
+            ImGui::TableNextColumn();
+            ImGui::TextWrapped("Available settings");
+            bool settings_list_has_focus = false;
+            bool settings_left_focus_detected = false;
+            const bool disable_left_nav = settings_focus_on_right;
+            if (disable_left_nav) {
+              ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
+            }
+            const float settings_list_item_height = 40.0f * display_scale;
+            const float settings_list_text_padding = 16.0f * display_scale;
+            const float settings_list_border_margin = 6.0f * display_scale;
+            const ImVec4 settings_border_selected =
+                GetConfiguredUIAccentColor(1.0f);
+            for (int i = 0; i < static_cast<int>(std::size(k_settings_sections));
+                 ++i) {
+              if (settings_focus_requested && i == settings_selected_section) {
+                ImGui::SetKeyboardFocusHere();
+              }
+              const bool settings_item_selected = settings_selected_section == i;
+              ImGui::PushID(i);
+              ImGui::SetCursorPosX(ImGui::GetCursorPosX() + settings_list_border_margin);
+              const float item_width =
+                  std::max(0.0f, ImGui::GetContentRegionAvail().x - settings_list_border_margin);
+              const ImVec2 item_size(item_width, settings_list_item_height);
+              ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+              ImGui::PushStyleColor(ImGuiCol_HeaderHovered,
+                                    ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+              ImGui::PushStyleColor(ImGuiCol_HeaderActive,
+                                    ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+              ImGui::PushStyleColor(ImGuiCol_NavCursor,
+                                    ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+              ImGui::Selectable("##settings_section_item", settings_item_selected,
+                                 ImGuiSelectableFlags_None, item_size);
+              ImGui::PopStyleColor(4);
+              if (ImGui::IsItemClicked()) {
+                if (settings_selected_section != i) {
+                  XELOGI("Settings: clicked -> section {}", i);
+                }
+                settings_selected_section = i;
+              }
+              ImDrawList* settings_draw_list = ImGui::GetWindowDrawList();
+              const ImVec2 item_min = ImGui::GetItemRectMin();
+              const ImVec2 item_max = ImGui::GetItemRectMax();
+              if (settings_item_selected) {
+                const float border_thickness =
+                    std::max(1.0f, 2.0f * display_scale);
+                const ImVec2 border_inset(border_thickness * 0.5f,
+                                          border_thickness * 0.5f);
+                MarkConfiguredTextBegin(settings_draw_list);
+                settings_draw_list->AddRect(
+                    ImVec2(item_min.x + border_inset.x,
+                           item_min.y + border_inset.y),
+                    ImVec2(item_max.x - border_inset.x,
+                           item_max.y - border_inset.y),
+                    ImGui::GetColorU32(settings_border_selected),
+                    8.0f * display_scale, 0, border_thickness);
+                MarkConfiguredTextEnd(settings_draw_list);
+              }
+              const float text_y = item_min.y +
+                                   (settings_list_item_height -
+                                    ImGui::GetTextLineHeight()) *
+                                       0.5f;
+              const ImVec2 text_pos(item_min.x + settings_list_text_padding,
+                                    text_y);
+              DrawTextWithConfiguredEffect(
+                  settings_draw_list, ImGui::GetFont(), ImGui::GetFontSize(),
+                  text_pos, ImGui::GetColorU32(ImGuiCol_Text),
+                  k_settings_sections[i]);
+              const bool entry_focused = ImGui::IsItemFocused();
+              ImGui::PopID();
+              ImGui::Dummy(ImVec2(0.0f, 6.0f * display_scale));
+              if (entry_focused) {
+                if (settings_selected_section != i) {
+                  XELOGI("Settings: focus -> section {}", i);
+                }
+                settings_selected_section = i;
+                settings_focus_requested = false;
+                settings_focus_on_right = false;
+                settings_list_has_focus = true;
+                settings_left_focus_detected = true;
+              }
+            }
+            if (disable_left_nav) {
+              ImGui::PopItemFlag();
+            }
+
+            if (!settings_focus_on_right && !settings_left_focus_detected &&
+                !settings_focus_requested) {
+              settings_focus_requested = true;
+            }
+
+            if (settings_list_has_focus &&
+                (ImGui::IsKeyPressed(ImGuiKey_RightArrow, false) ||
+                 ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight, false))) {
+              settings_focus_right_requested = true;
+              settings_focus_requested = false;
+              settings_focus_on_right = true;
+            }
+
+            ImGui::TableNextColumn();
+            ImGui::TableNextColumn();
+
+            const bool disable_right_nav = !settings_focus_on_right;
+            if (disable_right_nav) {
+              ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
+            }
+            ImGui::PushStyleColor(ImGuiCol_NavCursor,
+                                  ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+
+            if (settings_focus_right_requested) {
+              ImGui::SetKeyboardFocusHere();
+              settings_focus_right_requested = false;
+              settings_focus_on_right = true;
+            }
+
+            const float settings_control_border_thickness =
+                std::max(1.0f, 2.0f * display_scale);
+            const float settings_control_rounding = 8.0f * display_scale;
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize,
+                                settings_control_border_thickness);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,
+                                settings_control_rounding);
+            const float settings_wrap_pos_x =
+                ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+            ImGui::PushTextWrapPos(settings_wrap_pos_x);
+            const float settings_item_width =
+                std::max(220.0f, ImGui::GetContentRegionAvail().x * 0.34f);
+            ImGui::PushItemWidth(settings_item_width);
+
+        if (settings_selected_section == 0) {
+          auto c_apply_patches = dynamic_cast<cvar::ConfigVar<bool>*>(
+              cvar::ConfigVars->find("apply_patches")->second);
+          if (ImGui::Checkbox("Apply Patches", c_apply_patches->current_value())) {
+            c_apply_patches->SetConfigValue(
+                !c_apply_patches->GetTypedConfigValue());
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_apply_patches->description();
+          }
+
+          auto c_controller_hotkeys = dynamic_cast<cvar::ConfigVar<bool>*>(
+              cvar::ConfigVars->find("controller_hotkeys")->second);
+          if (ImGui::Checkbox("Controller Hotkeys",
+                              c_controller_hotkeys->current_value())) {
+            c_controller_hotkeys->SetConfigValue(
+                !c_controller_hotkeys->GetTypedConfigValue());
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_controller_hotkeys->description();
+          }
+
+          auto c_user_language = dynamic_cast<cvar::ConfigVar<int32_t>*>(
+              cvar::ConfigVars->find("user_language")->second);
+          int32_t user_language = c_user_language->GetTypedConfigValue();
+          struct LanguageOption {
+            int32_t value;
+            const char* label;
+          };
+          static constexpr LanguageOption kLanguageOptions[] = {
+              {1, "English"},
+              {2, "Japanese"},
+              {3, "German"},
+              {4, "French"},
+              {5, "Spanish"},
+              {6, "Italian"},
+              {7, "Korean"},
+              {8, "Traditional Chinese"},
+              {9, "Portuguese"},
+              {10, "Simplified Chinese"},
+              {11, "Polish"},
+              {12, "Russian"},
+          };
+          const char* user_language_preview = "English";
+          for (const auto& option : kLanguageOptions) {
+            if (option.value == user_language) {
+              user_language_preview = option.label;
+              break;
+            }
+          }
+          {
+            ScopedAccentComboStyle accent_combo_style;
+            if (ImGui::BeginCombo("Language", user_language_preview)) {
+              for (const auto& option : kLanguageOptions) {
+                const bool is_selected = user_language == option.value;
+                if (ImGui::Selectable(option.label, is_selected)) {
+                  c_user_language->SetConfigValue(option.value);
+                  config::SaveConfig();
+                  user_language = option.value;
+                }
+                if (is_selected) {
+                  ImGui::SetItemDefaultFocus();
+                }
+              }
+              ImGui::EndCombo();
+            }
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_user_language->description();
+          }
+
+          ImGui::Spacing();
+          if (DrawTextEffectButton("Open Profile Menu")) {
+            emulator_window_.ToggleProfilesConfigDialog();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = "Open the profile management dialog to create, edit, or delete profiles.";
+          }
+
+          if (c_controller_hotkeys->GetTypedConfigValue()) {
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Text,
+                                   ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+            ImGui::TextUnformatted(
+                "Select + A        Cycle readback resolve mode.");
+            ImGui::TextUnformatted(
+                "Select + B        Toggle logging between configured and Disabled.");
+            ImGui::TextUnformatted("Select + Y        Toggle fullscreen.");
+            ImGui::TextUnformatted(
+                "Select + X        Toggle Clear Memory Page State.");
+            ImGui::TextUnformatted("Select + RB       Clear GPU cache.");
+            ImGui::TextUnformatted(
+                "Select + LB       Toggle controller vibration.");
+            ImGui::TextUnformatted("Select + Up       Double CPU time scalar.");
+            ImGui::TextUnformatted("Select + Down     Half CPU time scalar.");
+            ImGui::TextUnformatted(
+                "Select + Right    Reset CPU time scalar.");
+            ImGui::PopStyleColor();
+          }
+
+        }
+
+        if (settings_selected_section == 1) {
+          auto c_allow_vrr_tearing = dynamic_cast<cvar::ConfigVar<bool>*>(
+              cvar::ConfigVars
+                  ->find("d3d12_allow_variable_refresh_rate_and_tearing")
+                  ->second);
+          if (ImGui::Checkbox("Allow Variable Refresh Rate/Tearing",
+                              c_allow_vrr_tearing->current_value())) {
+            c_allow_vrr_tearing->SetConfigValue(
+                !c_allow_vrr_tearing->GetTypedConfigValue());
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_allow_vrr_tearing->description();
+          }
+
+          auto c_clear_memory_page = dynamic_cast<cvar::ConfigVar<bool>*>(
+              cvar::ConfigVars->find("clear_memory_page_state")->second);
+          if (ImGui::Checkbox("Clear Memory Page State",
+                              c_clear_memory_page->current_value())) {
+            c_clear_memory_page->SetConfigValue(
+                !c_clear_memory_page->GetTypedConfigValue());
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_clear_memory_page->description();
+          }
+
+          auto c_readback_resolve =
+              dynamic_cast<cvar::ConfigVar<std::string>*>(
+                  cvar::ConfigVars->find("readback_resolve")->second);
+          std::string c_readback_resolve_value =
+              c_readback_resolve->GetTypedConfigValue();
+          {
+            ScopedAccentComboStyle accent_combo_style;
+            if (ImGui::BeginCombo("Readback Resolve",
+                                  c_readback_resolve_value.c_str())) {
+              if (ImGui::Selectable("None",
+                                    c_readback_resolve_value == "none")) {
+                c_readback_resolve->SetConfigValue("none");
+                config::SaveConfig();
+              }
+
+              if (ImGui::Selectable("Fast",
+                                    c_readback_resolve_value == "fast")) {
+                c_readback_resolve->SetConfigValue("fast");
+                config::SaveConfig();
+              }
+
+              if (ImGui::Selectable("Full",
+                                    c_readback_resolve_value == "full")) {
+                c_readback_resolve->SetConfigValue("full");
+                config::SaveConfig();
+              }
+
+              ImGui::EndCombo();
+            }
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_readback_resolve->description();
+          }
+
+          auto c_d3d12_bindless = dynamic_cast<cvar::ConfigVar<bool>*>(
+              cvar::ConfigVars->find("d3d12_bindless")->second);
+          if (ImGui::Checkbox("Enable D3D12 Bindless",
+                              c_d3d12_bindless->current_value())) {
+            c_d3d12_bindless->SetConfigValue(
+                !c_d3d12_bindless->GetTypedConfigValue());
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_d3d12_bindless->description();
+          }
+
+          auto c_d3d12_submit_on_primary_buffer_end =
+              dynamic_cast<cvar::ConfigVar<bool>*>(
+                  cvar::ConfigVars->find("d3d12_submit_on_primary_buffer_end")
+                      ->second);
+          if (ImGui::Checkbox("Submit On Primary Buffer End",
+                              c_d3d12_submit_on_primary_buffer_end
+                                  ->current_value())) {
+            c_d3d12_submit_on_primary_buffer_end->SetConfigValue(
+                !c_d3d12_submit_on_primary_buffer_end->GetTypedConfigValue());
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_d3d12_submit_on_primary_buffer_end->description();
+          }
+
+          auto c_d3d12_enable_tiled_shared_memory =
+              dynamic_cast<cvar::ConfigVar<bool>*>(
+                  cvar::ConfigVars->find("d3d12_enable_tiled_shared_memory")
+                      ->second);
+          if (ImGui::Checkbox(
+                  "Enable D3D12 Tiled Shared Memory (On Xbox keep\nOFF otherwise games will crash)",
+                  c_d3d12_enable_tiled_shared_memory->current_value())) {
+            c_d3d12_enable_tiled_shared_memory->SetConfigValue(
+                !c_d3d12_enable_tiled_shared_memory->GetTypedConfigValue());
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_d3d12_enable_tiled_shared_memory->description();
+          }
+        }
+
+        if (settings_selected_section == 2) {
+          auto c_post_scaling = dynamic_cast<cvar::ConfigVar<std::string>*>(
+              cvar::ConfigVars->find("postprocess_scaling_and_sharpening")
+                  ->second);
+          std::string c_post_scaling_value =
+              c_post_scaling->GetTypedConfigValue();
+          {
+            ScopedAccentComboStyle accent_combo_style;
+            if (ImGui::BeginCombo("Scaling & Sharpening Effect",
+                                  (c_post_scaling_value == ""
+                                       ? "None"
+                                       : c_post_scaling_value.c_str()))) {
+              if (ImGui::Selectable("None", c_post_scaling_value == "")) {
+                c_post_scaling->SetConfigValue("");
+                config::SaveConfig();
+              }
+
+              if (ImGui::Selectable("Bilinear",
+                                    c_post_scaling_value == "bilinear")) {
+                c_post_scaling->SetConfigValue("bilinear");
+                config::SaveConfig();
+              }
+
+              if (ImGui::Selectable("CAS", c_post_scaling_value == "cas")) {
+                c_post_scaling->SetConfigValue("cas");
+                config::SaveConfig();
+              }
+
+              if (ImGui::Selectable("FSR", c_post_scaling_value == "fsr")) {
+                c_post_scaling->SetConfigValue("fsr");
+                config::SaveConfig();
+              }
+
+              ImGui::EndCombo();
+            }
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_post_scaling->description();
+          }
+
+          auto c_post_aa = dynamic_cast<cvar::ConfigVar<std::string>*>(
+              cvar::ConfigVars->find("postprocess_antialiasing")->second);
+          std::string postaa_value = c_post_aa->GetTypedConfigValue();
+          {
+            ScopedAccentComboStyle accent_combo_style;
+            if (ImGui::BeginCombo(
+                    "Anti-Aliasing",
+                    (postaa_value == "" ? "None" : postaa_value.c_str()))) {
+              if (ImGui::Selectable("None", postaa_value == "")) {
+                c_post_aa->SetConfigValue("");
+                config::SaveConfig();
+              }
+
+              if (ImGui::Selectable("FXAA", postaa_value == "fxaa")) {
+                c_post_aa->SetConfigValue("fxaa");
+                config::SaveConfig();
+              }
+
+              if (ImGui::Selectable("FXAA Extreme",
+                                    postaa_value == "fxaa_extreme")) {
+                c_post_aa->SetConfigValue("fxaa_extreme");
+                config::SaveConfig();
+              }
+
+              ImGui::EndCombo();
+            }
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_post_aa->description();
+          }
+
+          auto c_cas_sharpness = dynamic_cast<cvar::ConfigVar<double>*>(
+              cvar::ConfigVars->find("postprocess_ffx_cas_additional_sharpness")
+                  ->second);
+          float cas_additional = (float)c_cas_sharpness->GetTypedConfigValue();
+          bool cas_additional_changed = false;
+          if (ImGui::SliderFloat("CAS Additional Sharpness", &cas_additional,
+                                 0.0f, 1.0f, "%.3f")) {
+            cas_additional_changed = true;
+          }
+          ImGui::SameLine();
+          if (ImGui::Button("Reset##ResetCASAdditionalSharpnessSettings")) {
+            cas_additional =
+                ui::Presenter::GuestOutputPaintConfig::kCasAdditionalSharpnessDefault;
+            cas_additional_changed = true;
+          }
+          if (cas_additional_changed) {
+            c_cas_sharpness->SetConfigValue((double)cas_additional);
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_cas_sharpness->description();
+          }
+
+          auto c_fsr_max_upsampling = dynamic_cast<cvar::ConfigVar<uint32_t>*>(
+              cvar::ConfigVars
+                  ->find("postprocess_ffx_fsr_max_upsampling_passes")
+                  ->second);
+          uint32_t fsr_max_upsampling_value =
+              c_fsr_max_upsampling->GetTypedConfigValue();
+          char value_label[32];
+          snprintf(value_label, 32, "%dx", fsr_max_upsampling_value);
+          {
+            ScopedAccentComboStyle accent_combo_style;
+            if (ImGui::BeginCombo("FSR Max Upsampling Passes", value_label)) {
+              if (ImGui::Selectable("1x", fsr_max_upsampling_value == 1)) {
+                c_fsr_max_upsampling->SetConfigValue(1);
+                config::SaveConfig();
+              }
+
+              if (ImGui::Selectable("2x", fsr_max_upsampling_value == 2)) {
+                c_fsr_max_upsampling->SetConfigValue(2);
+                config::SaveConfig();
+              }
+
+              if (ImGui::Selectable("3x", fsr_max_upsampling_value == 3)) {
+                c_fsr_max_upsampling->SetConfigValue(3);
+                config::SaveConfig();
+              }
+
+              if (ImGui::Selectable("4x", fsr_max_upsampling_value == 4)) {
+                c_fsr_max_upsampling->SetConfigValue(4);
+                config::SaveConfig();
+              }
+
+              ImGui::EndCombo();
+            }
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_fsr_max_upsampling->description();
+          }
+
+          auto c_fsr_sharpness_reduction =
+              dynamic_cast<cvar::ConfigVar<double>*>(
+                  cvar::ConfigVars
+                      ->find("postprocess_ffx_fsr_sharpness_reduction")
+                      ->second);
+          float fsr_sharpness_reduction =
+              (float)c_fsr_sharpness_reduction->GetTypedConfigValue();
+          const auto fsr_label =
+              fmt::format("{:.3f} stops", fsr_sharpness_reduction);
+          float fsr_slider_value =
+              sqrt(2.0f * fsr_sharpness_reduction);
+          bool fsr_sharpness_changed = false;
+          if (ImGui::SliderFloat(
+                  "FSR Sharpness Reduction", &fsr_slider_value,
+                  ui::Presenter::GuestOutputPaintConfig::kFsrSharpnessReductionMin,
+                  ui::Presenter::GuestOutputPaintConfig::kFsrSharpnessReductionMax,
+                  fsr_label.c_str(), ImGuiSliderFlags_NoInput)) {
+            fsr_sharpness_changed = true;
+          }
+          fsr_sharpness_reduction = 0.5f * fsr_slider_value * fsr_slider_value;
+          ImGui::SameLine();
+          if (ImGui::Button("Reset##ResetFSRSharpnessReductionSettings")) {
+            fsr_sharpness_reduction =
+                ui::Presenter::GuestOutputPaintConfig::kFsrSharpnessReductionDefault;
+            fsr_sharpness_changed = true;
+          }
+          if (fsr_sharpness_changed) {
+            c_fsr_sharpness_reduction->SetConfigValue(
+                (double)fsr_sharpness_reduction);
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_fsr_sharpness_reduction->description();
+          }
+
+          auto c_present_letterbox = dynamic_cast<cvar::ConfigVar<bool>*>(
+              cvar::ConfigVars->find("present_letterbox")->second);
+          if (ImGui::Checkbox("Letterbox Presentation",
+                              c_present_letterbox->current_value())) {
+            c_present_letterbox->SetConfigValue(
+                !c_present_letterbox->GetTypedConfigValue());
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_present_letterbox->description();
+          }
+
+          auto c_present_safe_area_x = dynamic_cast<cvar::ConfigVar<int32_t>*>(
+              cvar::ConfigVars->find("present_safe_area_x")->second);
+          int present_safe_area_x = c_present_safe_area_x->GetTypedConfigValue();
+          if (ImGui::SliderInt("Presentation Safe Area Width",
+                               &present_safe_area_x, 1, 100, "%d%%")) {
+            c_present_safe_area_x->SetConfigValue(present_safe_area_x);
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_present_safe_area_x->description();
+          }
+
+          auto c_present_safe_area_y = dynamic_cast<cvar::ConfigVar<int32_t>*>(
+              cvar::ConfigVars->find("present_safe_area_y")->second);
+          int present_safe_area_y = c_present_safe_area_y->GetTypedConfigValue();
+          if (ImGui::SliderInt("Presentation Safe Area Height",
+                               &present_safe_area_y, 1, 100, "%d%%")) {
+            c_present_safe_area_y->SetConfigValue(present_safe_area_y);
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_present_safe_area_y->description();
+          }
+
+          auto c_present_render_pass_clear =
+              dynamic_cast<cvar::ConfigVar<bool>*>(
+                  cvar::ConfigVars->find("present_render_pass_clear")->second);
+          if (ImGui::Checkbox("Use Presentation Render-Pass Clear",
+                              c_present_render_pass_clear->current_value())) {
+            c_present_render_pass_clear->SetConfigValue(
+                !c_present_render_pass_clear->GetTypedConfigValue());
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_present_render_pass_clear->description();
+          }
+
+          auto c_host_present_from_non_ui_thread =
+              dynamic_cast<cvar::ConfigVar<bool>*>(
+                  cvar::ConfigVars->find("host_present_from_non_ui_thread")
+                      ->second);
+          if (ImGui::Checkbox("Host Present From Non-UI Thread",
+                              c_host_present_from_non_ui_thread
+                                  ->current_value())) {
+            c_host_present_from_non_ui_thread->SetConfigValue(
+                !c_host_present_from_non_ui_thread->GetTypedConfigValue());
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_host_present_from_non_ui_thread->description();
+          }
+
+          auto c_post_dither = dynamic_cast<cvar::ConfigVar<bool>*>(
+              cvar::ConfigVars->find("postprocess_dither")->second);
+          if (ImGui::Checkbox("Postprocess Dither",
+                              c_post_dither->current_value())) {
+            c_post_dither->SetConfigValue(!c_post_dither->GetTypedConfigValue());
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_post_dither->description();
+          }
+        }
+
+        if (settings_selected_section == 3) {
+          auto find_gpu_cvar = cvar::ConfigVars->find("gpu");
+          auto c_gpu = find_gpu_cvar != cvar::ConfigVars->end()
+                           ? dynamic_cast<cvar::ConfigVar<std::string>*>(
+                                 find_gpu_cvar->second)
+                           : nullptr;
+          std::string gpu_value = c_gpu ? c_gpu->GetTypedConfigValue() : "";
+          if (!c_gpu) {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+                               "GPU backend selector unavailable.");
+          } else {
+            const char* gpu_preview =
+                gpu_value.empty() ? "Any" : gpu_value.c_str();
+            {
+              ScopedAccentComboStyle accent_combo_style;
+              if (ImGui::BeginCombo("Graphics System", gpu_preview)) {
+                if (ImGui::Selectable("Any", gpu_value == "any")) {
+                  c_gpu->SetConfigValue("any");
+                  config::SaveConfig();
+                }
+
+#if XE_PLATFORM_WIN32
+                if (ImGui::Selectable("D3D12", gpu_value == "d3d12")) {
+                  c_gpu->SetConfigValue("d3d12");
+                  config::SaveConfig();
+                }
+#endif
+
+#if !XE_PLATFORM_WINRT && !XE_PLATFORM_MAC
+                if (ImGui::Selectable("Vulkan", gpu_value == "vulkan")) {
+                  c_gpu->SetConfigValue("vulkan");
+                  config::SaveConfig();
+                }
+#endif
+
+#if !XE_PLATFORM_WINRT
+                if (ImGui::Selectable("Null", gpu_value == "null")) {
+                  c_gpu->SetConfigValue("null");
+                  config::SaveConfig();
+                }
+#endif
+
+                ImGui::EndCombo();
+              }
+            }
+
+            if (ImGui::IsItemFocused()) {
+              tooltip = c_gpu->description();
+            }
+
+            ImGui::TextColored(
+                ImVec4(1.0f, 1.0f, 1.0f, 1.0f),
+                "(Restart required to apply. Xbox only supports D3D12.)");
+          }
+
+          auto find_disable_context_promotion =
+              cvar::ConfigVars->find("disable_context_promotion");
+          auto c_disable_context_promotion =
+              find_disable_context_promotion != cvar::ConfigVars->end()
+                  ? dynamic_cast<cvar::ConfigVar<bool>*>(
+                        find_disable_context_promotion->second)
+                  : nullptr;
+          if (c_disable_context_promotion) {
+            if (ImGui::Checkbox(
+                    "Disable Context Promotion",
+                    c_disable_context_promotion->current_value())) {
+              c_disable_context_promotion->SetConfigValue(
+                  !c_disable_context_promotion->GetTypedConfigValue());
+              config::SaveConfig();
+            }
+
+            if (ImGui::IsItemFocused()) {
+              tooltip = c_disable_context_promotion->description();
+            }
+          }
+
+          auto find_allow_invalid_upload_range =
+              cvar::ConfigVars->find("gpu_allow_invalid_upload_range");
+          auto c_allow_invalid_upload_range =
+              find_allow_invalid_upload_range != cvar::ConfigVars->end()
+                  ? dynamic_cast<cvar::ConfigVar<bool>*>(
+                        find_allow_invalid_upload_range->second)
+                  : nullptr;
+          if (c_allow_invalid_upload_range) {
+            if (ImGui::Checkbox(
+                    "Allow Invalid Upload Range",
+                    c_allow_invalid_upload_range->current_value())) {
+              c_allow_invalid_upload_range->SetConfigValue(
+                  !c_allow_invalid_upload_range->GetTypedConfigValue());
+              config::SaveConfig();
+            }
+
+            if (ImGui::IsItemFocused()) {
+              tooltip = c_allow_invalid_upload_range->description();
+            }
+          }
+
+          auto find_allow_invalid =
+              cvar::ConfigVars->find("gpu_allow_invalid_fetch_constants");
+          auto c_allow_invalid =
+              find_allow_invalid != cvar::ConfigVars->end()
+                  ? dynamic_cast<cvar::ConfigVar<bool>*>(
+                        find_allow_invalid->second)
+                  : nullptr;
+          if (c_allow_invalid) {
+            if (ImGui::Checkbox("Allow Invalid Fetch Constants",
+                                c_allow_invalid->current_value())) {
+              c_allow_invalid->SetConfigValue(
+                  !c_allow_invalid->GetTypedConfigValue());
+              config::SaveConfig();
+            }
+
+            if (ImGui::IsItemFocused()) {
+              tooltip = c_allow_invalid->description();
+            }
+          }
+
+          auto c_dxbc_switch = FindConfigVar<bool>("dxbc_switch");
+          if (c_dxbc_switch) {
+            if (ImGui::Checkbox("DXBC Switch",
+                                c_dxbc_switch->current_value())) {
+              c_dxbc_switch->SetConfigValue(
+                  !c_dxbc_switch->GetTypedConfigValue());
+              config::SaveConfig();
+            }
+
+            if (ImGui::IsItemFocused()) {
+              tooltip = c_dxbc_switch->description();
+            }
+          }
+
+          auto c2xmsaa = FindConfigVar<bool>("native_2x_msaa");
+          if (c2xmsaa) {
+            if (ImGui::Checkbox("Native 2X MSAA", c2xmsaa->current_value())) {
+              c2xmsaa->SetConfigValue(!c2xmsaa->GetTypedConfigValue());
+              config::SaveConfig();
+            }
+
+            if (ImGui::IsItemFocused()) {
+              tooltip = c2xmsaa->description();
+            }
+          }
+
+          auto c_vsync = FindConfigVar<bool>("vsync");
+          if (c_vsync) {
+            if (ImGui::Checkbox("V-Sync", c_vsync->current_value())) {
+              c_vsync->SetConfigValue(!c_vsync->GetTypedConfigValue());
+              config::SaveConfig();
+            }
+
+            if (ImGui::IsItemFocused()) {
+              tooltip = c_vsync->description();
+            }
+          }
+
+          auto c_framerate_limit = FindConfigVar<uint64_t>("framerate_limit");
+          if (c_framerate_limit) {
+            int framerate_limit_value =
+                static_cast<int>(c_framerate_limit->GetTypedConfigValue());
+            if (ImGui::SliderInt("Framerate Limit", &framerate_limit_value, 0,
+                                 240)) {
+              c_framerate_limit->SetConfigValue(
+                  static_cast<uint64_t>(framerate_limit_value));
+              config::SaveConfig();
+            }
+
+            if (ImGui::IsItemFocused()) {
+              tooltip = c_framerate_limit->description();
+            }
+          }
+
+          auto c_draw_resolution_scaled_texture_offsets = FindConfigVar<bool>(
+              "draw_resolution_scaled_texture_offsets");
+          if (c_draw_resolution_scaled_texture_offsets) {
+            if (ImGui::Checkbox("Draw Resolution Scaled Texture Offsets",
+                                c_draw_resolution_scaled_texture_offsets
+                                    ->current_value())) {
+              c_draw_resolution_scaled_texture_offsets->SetConfigValue(
+                  !c_draw_resolution_scaled_texture_offsets
+                       ->GetTypedConfigValue());
+              config::SaveConfig();
+            }
+
+            if (ImGui::IsItemFocused()) {
+              tooltip =
+                  c_draw_resolution_scaled_texture_offsets->description();
+            }
+          }
+
+          auto c_render_target_path =
+              FindConfigVar<std::string>("render_target_path_d3d12");
+          if (c_render_target_path) {
+            std::string c_render_target_path_value =
+                c_render_target_path->GetTypedConfigValue();
+            {
+              ScopedAccentComboStyle accent_combo_style;
+              if (ImGui::BeginCombo(
+                      "Render Target Path",
+                      (c_render_target_path_value == ""
+                           ? "Any"
+                           : c_render_target_path_value.c_str()))) {
+                if (ImGui::Selectable("Any",
+                                      c_render_target_path_value == "")) {
+                  c_render_target_path->SetConfigValue("");
+                  config::SaveConfig();
+                }
+
+                if (ImGui::Selectable("ROV",
+                                      c_render_target_path_value == "rov")) {
+                  c_render_target_path->SetConfigValue("rov");
+                  config::SaveConfig();
+                }
+
+                if (ImGui::Selectable("RTV",
+                                      c_render_target_path_value == "rtv")) {
+                  c_render_target_path->SetConfigValue("rtv");
+                  config::SaveConfig();
+                }
+
+                ImGui::EndCombo();
+              }
+            }
+
+            if (ImGui::IsItemFocused()) {
+              tooltip = c_render_target_path->description();
+            }
+          }
+
+          auto c_gamma_rt = FindConfigVar<bool>("gamma_render_target_as_srgb");
+          if (c_gamma_rt) {
+            if (ImGui::Checkbox("Gamma Render Target As sRGB",
+                                c_gamma_rt->current_value())) {
+              c_gamma_rt->SetConfigValue(!c_gamma_rt->GetTypedConfigValue());
+              config::SaveConfig();
+            }
+
+            if (ImGui::IsItemFocused()) {
+              tooltip = c_gamma_rt->description();
+            }
+          }
+
+          auto c_query_lower = FindConfigVar<int32_t>(
+              "query_occlusion_sample_lower_threshold");
+          if (c_query_lower) {
+            int query_lower = c_query_lower->GetTypedConfigValue();
+            if (ImGui::InputInt("Query Occlusion Lower Threshold",
+                                &query_lower)) {
+              c_query_lower->SetConfigValue(query_lower);
+              config::SaveConfig();
+            }
+
+            if (ImGui::IsItemFocused()) {
+              tooltip = c_query_lower->description();
+            }
+          }
+
+          auto c_query_upper = FindConfigVar<int32_t>(
+              "query_occlusion_sample_upper_threshold");
+          if (c_query_upper) {
+            int query_upper = c_query_upper->GetTypedConfigValue();
+            if (ImGui::InputInt("Query Occlusion Upper Threshold",
+                                &query_upper)) {
+              c_query_upper->SetConfigValue(query_upper);
+              config::SaveConfig();
+            }
+
+            if (ImGui::IsItemFocused()) {
+              tooltip = c_query_upper->description();
+            }
+          }
+
+          auto c_fuzzy_alpha = FindConfigVar<bool>("use_fuzzy_alpha_epsilon");
+          if (c_fuzzy_alpha) {
+            if (ImGui::Checkbox("Use Fuzzy Alpha Epsilon",
+                                c_fuzzy_alpha->current_value())) {
+              c_fuzzy_alpha->SetConfigValue(
+                  !c_fuzzy_alpha->GetTypedConfigValue());
+              config::SaveConfig();
+            }
+
+            if (ImGui::IsItemFocused()) {
+              tooltip = c_fuzzy_alpha->description();
+            }
+          }
+
+          auto c_native_stencil_value_output =
+              FindConfigVar<bool>("native_stencil_value_output");
+          if (c_native_stencil_value_output) {
+            if (ImGui::Checkbox(
+                    "Native Stencil Value Output",
+                    c_native_stencil_value_output->current_value())) {
+              c_native_stencil_value_output->SetConfigValue(
+                  !c_native_stencil_value_output->GetTypedConfigValue());
+              config::SaveConfig();
+            }
+
+            if (ImGui::IsItemFocused()) {
+              tooltip = c_native_stencil_value_output->description();
+            }
+          }
+
+          auto c_snorm16_render_target_full_range =
+              FindConfigVar<bool>("snorm16_render_target_full_range");
+          if (c_snorm16_render_target_full_range) {
+            if (ImGui::Checkbox("SNORM16 Render Target Full Range",
+                                c_snorm16_render_target_full_range
+                                    ->current_value())) {
+              c_snorm16_render_target_full_range->SetConfigValue(
+                  !c_snorm16_render_target_full_range->GetTypedConfigValue());
+              config::SaveConfig();
+            }
+
+            if (ImGui::IsItemFocused()) {
+              tooltip = c_snorm16_render_target_full_range->description();
+            }
+          }
+
+          auto c_mrt_edram_used_range_clamp_to_min =
+              FindConfigVar<bool>("mrt_edram_used_range_clamp_to_min");
+          if (c_mrt_edram_used_range_clamp_to_min) {
+            if (ImGui::Checkbox("MRT EDRAM Used Range Clamp To Min",
+                                c_mrt_edram_used_range_clamp_to_min
+                                    ->current_value())) {
+              c_mrt_edram_used_range_clamp_to_min->SetConfigValue(
+                  !c_mrt_edram_used_range_clamp_to_min->GetTypedConfigValue());
+              config::SaveConfig();
+            }
+
+            if (ImGui::IsItemFocused()) {
+              tooltip = c_mrt_edram_used_range_clamp_to_min->description();
+            }
+          }
+
+          auto c_store_shaders = FindConfigVar<bool>("store_shaders");
+          if (c_store_shaders) {
+            if (ImGui::Checkbox("Store Shaders",
+                                c_store_shaders->current_value())) {
+              c_store_shaders->SetConfigValue(
+                  !c_store_shaders->GetTypedConfigValue());
+              config::SaveConfig();
+            }
+
+            if (ImGui::IsItemFocused()) {
+              tooltip = c_store_shaders->description();
+            }
+          }
+
+          auto c_preload_shader_cache =
+              FindConfigVar<bool>("preload_shader_cache");
+          if (c_preload_shader_cache) {
+            if (ImGui::Checkbox("Preload Shader Cache",
+                                c_preload_shader_cache->current_value())) {
+              c_preload_shader_cache->SetConfigValue(
+                  !c_preload_shader_cache->GetTypedConfigValue());
+              config::SaveConfig();
+            }
+
+            if (ImGui::IsItemFocused()) {
+              tooltip = c_preload_shader_cache->description();
+            }
+          }
+
+          auto c_scale_x = FindConfigVar<int>("draw_resolution_scale_x");
+          auto c_scale_y = FindConfigVar<int>("draw_resolution_scale_y");
+          if (c_scale_x && c_scale_y) {
+            int scale_value = c_scale_x->GetTypedConfigValue();
+            char scale_value_label[32];
+            snprintf(scale_value_label, 32, "%dx", scale_value);
+            {
+              ScopedAccentComboStyle accent_combo_style;
+              if (ImGui::BeginCombo("Draw Resolution Scale",
+                                    scale_value_label)) {
+                if (ImGui::Selectable("1x", scale_value == 1)) {
+                  c_scale_x->SetConfigValue(1);
+                  c_scale_y->SetConfigValue(1);
+                  config::SaveConfig();
+                }
+
+                if (ImGui::Selectable("2x", scale_value == 2)) {
+                  c_scale_x->SetConfigValue(2);
+                  c_scale_y->SetConfigValue(2);
+                  config::SaveConfig();
+                }
+
+                if (ImGui::Selectable("3x", scale_value == 3)) {
+                  c_scale_x->SetConfigValue(3);
+                  c_scale_y->SetConfigValue(3);
+                  config::SaveConfig();
+                }
+
+                ImGui::EndCombo();
+              }
+            }
+
+            if (ImGui::IsItemFocused()) {
+              tooltip = c_scale_x->description();
+            }
+
+            ImGui::TextColored(
+                ImVec4(1.0f, 1.0f, 1.0f, 1.0f),
+                "(Changing this from x1 will cause all games to crash on "
+                "Xbox)");
+          }
+        }
+
+        if (settings_selected_section == 4) {
+          auto c_apu = dynamic_cast<cvar::ConfigVar<std::string>*>(
+              cvar::ConfigVars->find("apu")->second);
+          std::string apu_value = c_apu->GetTypedConfigValue();
+          const char* apu_preview = apu_value.empty() ? "Any" : apu_value.c_str();
+          {
+            ScopedAccentComboStyle accent_combo_style;
+            if (ImGui::BeginCombo("Audio System", apu_preview)) {
+              if (ImGui::Selectable("Any", apu_value == "any")) {
+                c_apu->SetConfigValue("any");
+                config::SaveConfig();
+              }
+
+              if (ImGui::Selectable("Nop", apu_value == "nop")) {
+                c_apu->SetConfigValue("nop");
+                config::SaveConfig();
+              }
+
+#if XE_PLATFORM_WIN32
+              if (ImGui::Selectable("XAudio2", apu_value == "xaudio2")) {
+                c_apu->SetConfigValue("xaudio2");
+                config::SaveConfig();
+              }
+#endif
+
+#if XE_PLATFORM_LINUX
+              if (ImGui::Selectable("ALSA", apu_value == "alsa")) {
+                c_apu->SetConfigValue("alsa");
+                config::SaveConfig();
+              }
+#endif
+
+#if !XE_PLATFORM_ANDROID && !XE_PLATFORM_WINRT
+              if (ImGui::Selectable("SDL", apu_value == "sdl")) {
+                c_apu->SetConfigValue("sdl");
+                config::SaveConfig();
+              }
+#endif
+
+              ImGui::EndCombo();
+            }
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_apu->description();
+          }
+
+          auto c_mute = dynamic_cast<cvar::ConfigVar<bool>*>(
+              cvar::ConfigVars->find("mute")->second);
+          if (ImGui::Checkbox("Mute Audio", c_mute->current_value())) {
+            c_mute->SetConfigValue(!c_mute->GetTypedConfigValue());
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_mute->description();
+          }
+        }
+
+        if (settings_selected_section == 5) {
+          auto c_ignore_offset = dynamic_cast<cvar::ConfigVar<bool>*>(
+              cvar::ConfigVars->find("ignore_offset_for_ranged_allocations")
+                  ->second);
+          if (ImGui::Checkbox("Ignore Offset",
+                              c_ignore_offset->current_value())) {
+            c_ignore_offset->SetConfigValue(
+                !c_ignore_offset->GetTypedConfigValue());
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_ignore_offset->description();
+          }
+
+          auto c_protect_on_release = dynamic_cast<cvar::ConfigVar<bool>*>(
+              cvar::ConfigVars->find("protect_on_release")->second);
+          if (ImGui::Checkbox("Protect On Release",
+                              c_protect_on_release->current_value())) {
+            c_protect_on_release->SetConfigValue(
+                !c_protect_on_release->GetTypedConfigValue());
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_protect_on_release->description();
+          }
+
+          auto c_protect_zero = dynamic_cast<cvar::ConfigVar<bool>*>(
+              cvar::ConfigVars->find("protect_zero")->second);
+          if (ImGui::Checkbox("Protect Zero",
+                              c_protect_zero->current_value())) {
+            c_protect_zero->SetConfigValue(
+                !c_protect_zero->GetTypedConfigValue());
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_protect_zero->description();
+          }
+
+          auto c_scribble_heap = dynamic_cast<cvar::ConfigVar<bool>*>(
+              cvar::ConfigVars->find("scribble_heap")->second);
+          if (ImGui::Checkbox("Scribble Heap",
+                              c_scribble_heap->current_value())) {
+            c_scribble_heap->SetConfigValue(
+                !c_scribble_heap->GetTypedConfigValue());
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_scribble_heap->description();
+          }
+        }
+
+        if (settings_selected_section == 6) {
+          auto c_mount_cache = dynamic_cast<cvar::ConfigVar<bool>*>(
+              cvar::ConfigVars->find("mount_cache")->second);
+          if (ImGui::Checkbox("Mount Cache", c_mount_cache->current_value())) {
+            c_mount_cache->SetConfigValue(
+                !c_mount_cache->GetTypedConfigValue());
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_mount_cache->description();
+          }
+
+          auto c_mount_scratch = dynamic_cast<cvar::ConfigVar<bool>*>(
+              cvar::ConfigVars->find("mount_scratch")->second);
+          if (ImGui::Checkbox("Mount Scratch",
+                              c_mount_scratch->current_value())) {
+            c_mount_scratch->SetConfigValue(
+                !c_mount_scratch->GetTypedConfigValue());
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_mount_scratch->description();
+          }
+
+          auto c_mount_memory_unit = dynamic_cast<cvar::ConfigVar<bool>*>(
+              cvar::ConfigVars->find("mount_memory_unit")->second);
+          if (ImGui::Checkbox("Mount Memory Unit",
+                              c_mount_memory_unit->current_value())) {
+            c_mount_memory_unit->SetConfigValue(
+                !c_mount_memory_unit->GetTypedConfigValue());
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_mount_memory_unit->description();
+          }
+        }
+
+        if (settings_selected_section == 7) {
+          auto bool_toggle = [&](const char* label, const char* true_label,
+                                 const char* false_label,
+                                 cvar::ConfigVar<bool>* cvar,
+                                 const char* desc) {
+            bool current = cvar->GetTypedConfigValue();
+            const char* preview = current ? true_label : false_label;
+            {
+              ScopedAccentComboStyle accent_combo_style;
+              if (ImGui::BeginCombo(label, preview)) {
+                if (ImGui::Selectable(true_label, current)) {
+                  if (!current) {
+                    cvar->SetConfigValue(true);
+                    config::SaveConfig();
+                  }
+                }
+
+                if (ImGui::Selectable(false_label, !current)) {
+                  if (current) {
+                    cvar->SetConfigValue(false);
+                    config::SaveConfig();
+                  }
+                }
+                ImGui::EndCombo();
+              }
+            }
+            if (ImGui::IsItemFocused()) {
+              tooltip = desc;
+            }
+          };
+
+          bool_toggle(
+              "Achievement Notifications",
+              "Show Notifications",
+              "Hide Notifications",
+              dynamic_cast<cvar::ConfigVar<bool>*>(
+                  cvar::ConfigVars->find("show_achievement_notification")->second),
+              "Choose whether achievement pop-ups are shown."
+          );
+
+          bool_toggle(
+              "Storage Selection Dialog",
+              "Enable Dialog",
+              "Disable Dialog",
+              dynamic_cast<cvar::ConfigVar<bool>*>(
+                  cvar::ConfigVars->find("storage_selection_dialog")->second),
+              "Enable or disable the storage selection dialog."
+          );
+
+         bool_toggle(
+              "Description Preference",
+              "Short Descriptions",
+              "Long Descriptions",
+              dynamic_cast<cvar::ConfigVar<bool>*>(
+                  cvar::ConfigVars->find("ui_prefer_short_descriptions")->second),
+              "Choose whether the Games tab uses short or long metadata descriptions (falls back as needed)."
+          );
+
+          bool_toggle(
+              "Boxart Image Preference",
+              "Banner First",
+              "Gallery First",
+              dynamic_cast<cvar::ConfigVar<bool>*>(
+                  cvar::ConfigVars->find("ui_prefer_banner_hero_art")->second),
+              "Choose whether to prioritize banner box art or gallery artwork above the description."
+          );
+
+          bool_toggle(
+              "Game List Art",
+              "Icon First",
+              "Box Art First",
+              dynamic_cast<cvar::ConfigVar<bool>*>(
+                  cvar::ConfigVars->find("ui_prefer_icon_gamelist_art")->second),
+              "Choose whether the Games tab list prefers icon art or box art."
+          );
+
+          bool_toggle(
+              "Genre Metadata",
+              "Show Genre",
+              "Hide Genre",
+              dynamic_cast<cvar::ConfigVar<bool>*>(
+                  cvar::ConfigVars->find("ui_show_genre_metadata")->second),
+              "Toggle genre metadata in the Games tab detail pane."
+          );
+
+          bool_toggle(
+              "Developer Metadata",
+              "Show Developer",
+              "Hide Developer",
+              dynamic_cast<cvar::ConfigVar<bool>*>(
+                  cvar::ConfigVars->find("ui_show_developer_metadata")->second),
+              "Toggle developer metadata in the Games tab detail pane."
+          );
+
+          bool_toggle(
+              "Title Text",
+              "Show Game Title",
+              "Hide Game Title",
+              dynamic_cast<cvar::ConfigVar<bool>*>(
+                  cvar::ConfigVars->find("ui_show_title_metadata")->second),
+              "Toggle the selected game's title in the metadata panel."
+          );
+
+          bool_toggle(
+              "Title ID Metadata",
+              "Show Title ID",
+              "Hide Title ID",
+              dynamic_cast<cvar::ConfigVar<bool>*>(
+                  cvar::ConfigVars->find("ui_show_title_id_metadata")->second),
+              "Toggle Title ID visibility in the Games tab detail pane."
+          );
+
+          bool_toggle(
+              "Release Date Metadata",
+              "Show Release Date",
+              "Hide Release Date",
+              dynamic_cast<cvar::ConfigVar<bool>*>(
+                  cvar::ConfigVars->find("ui_show_release_date_metadata")->second),
+              "Toggle release dates in the Games tab detail pane."
+          );
+
+          bool_toggle(
+              "User Rating Metadata",
+              "Show User Rating",
+              "Hide User Rating",
+              dynamic_cast<cvar::ConfigVar<bool>*>(
+                  cvar::ConfigVars->find("ui_show_user_rating_metadata")->second),
+              "Toggle user ratings in the Games tab detail pane."
+          );
+
+          // Interface overlay selection
+          auto c_overlay = dynamic_cast<cvar::ConfigVar<std::string>*>(
+              cvar::ConfigVars->find("ui_interface_overlay_image")->second);
+          std::string current_overlay = c_overlay ? c_overlay->GetTypedConfigValue() : "blades.png";
+          
+          // Scan for available interface overlay files
+          static std::vector<std::string> available_overlays;
+          static int current_overlay_index = 0;
+          static bool overlays_scanned = false;
+          
+          if (!overlays_scanned) {
+            available_overlays.clear();
+            
+            // Scan Assets/interface_overlays/ folder
+            std::string overlays_dir = "Assets/interface_overlays/";
+            if (std::filesystem::exists(overlays_dir) && std::filesystem::is_directory(overlays_dir)) {
+              for (const auto& entry : std::filesystem::directory_iterator(overlays_dir)) {
+                if (entry.is_regular_file() && entry.path().extension() == ".png") {
+                  available_overlays.push_back(entry.path().filename().string());
+                }
+              }
+            }
+            
+            // Also scan content path if available
+            auto ccontent_root = dynamic_cast<cvar::ConfigVar<std::filesystem::path>*>(
+                cvar::ConfigVars->find("content_root")->second);
+            std::string content_path = ccontent_root->GetTypedConfigValue().string();
+            if (!content_path.empty()) {
+              std::string content_overlays_dir = content_path + "/interface_overlays/";
+              if (std::filesystem::exists(content_overlays_dir) && std::filesystem::is_directory(content_overlays_dir)) {
+                for (const auto& entry : std::filesystem::directory_iterator(content_overlays_dir)) {
+                  if (entry.is_regular_file() && entry.path().extension() == ".png") {
+                    std::string filename = entry.path().filename().string();
+                    // Avoid duplicates
+                    if (std::find(available_overlays.begin(), available_overlays.end(), filename) == available_overlays.end()) {
+                      available_overlays.push_back(filename);
+                    }
+                  }
+                }
+              }
+            }
+            
+            // Sort alphabetically
+            std::sort(available_overlays.begin(), available_overlays.end());
+            
+            // Find current overlay index
+            auto it = std::find(available_overlays.begin(), available_overlays.end(), current_overlay);
+            current_overlay_index = (it != available_overlays.end()) ? std::distance(available_overlays.begin(), it) : 0;
+            
+            overlays_scanned = true;
+          }
+          
+          if (!available_overlays.empty()) {
+            const char* preview = current_overlay_index < available_overlays.size() ? 
+                                 available_overlays[current_overlay_index].c_str() : "blades.png";
+            
+            {
+              ScopedAccentComboStyle accent_combo_style;
+              if (ImGui::BeginCombo("Interface Overlay", preview)) {
+                for (int i = 0; i < static_cast<int>(available_overlays.size()); ++i) {
+                  bool is_selected = (current_overlay_index == i);
+                  if (ImGui::Selectable(available_overlays[i].c_str(), is_selected)) {
+                    current_overlay_index = i;
+                    c_overlay->SetConfigValue(available_overlays[i]);
+                    config::SaveConfig();
+                    background_tex_.reset();
+                  }
+                  if (is_selected) {
+                    ImGui::SetItemDefaultFocus();
+                  }
+                }
+                ImGui::EndCombo();
+              }
+            }
+            if (ImGui::IsItemFocused()) {
+              tooltip = "Select an interface overlay from the Assets/interface_overlays/ folder. PNG files only.";
+            }
+          } else {
+            ImGui::Text("No interface overlays found in Assets/interface_overlays/");
+          }
+
+          // Guide image selection
+          auto c_guide = dynamic_cast<cvar::ConfigVar<std::string>*>(
+              cvar::ConfigVars->find("ui_guide_image")->second);
+          std::string current_guide = c_guide ? c_guide->GetTypedConfigValue() : "blades.png";
+          const auto has_suffix = [](const std::string& value,
+                                     const std::string& suffix) {
+            return value.size() >= suffix.size() &&
+                   value.compare(value.size() - suffix.size(), suffix.size(),
+                                 suffix) == 0;
+          };
+          if (current_guide.empty() || current_guide.find('.') == std::string::npos) {
+            current_guide = "blades.png";
+          }
+          {
+            std::filesystem::path current_guide_path(current_guide);
+            std::string current_guide_stem = current_guide_path.stem().string();
+            std::string current_guide_ext = current_guide_path.extension().string();
+            if (current_guide_ext.empty()) {
+              current_guide_ext = ".png";
+            }
+            if (has_suffix(current_guide_stem, "_wide")) {
+              current_guide = current_guide_stem.substr(
+                                  0, current_guide_stem.size() - 5) +
+                              current_guide_ext;
+            } else if (has_suffix(current_guide_stem, "-wide")) {
+              current_guide = current_guide_stem.substr(
+                                  0, current_guide_stem.size() - 5) +
+                              current_guide_ext;
+            }
+          }
+          
+          // Scan for available guide image files
+          static std::vector<std::string> available_guides;
+          static int current_guide_index = 0;
+          static bool guides_scanned = false;
+          
+          if (!guides_scanned) {
+            available_guides.clear();
+            
+            // Scan Assets/guide_images/ folder
+            std::string guides_dir = "Assets/guide_images/";
+            if (std::filesystem::exists(guides_dir) && std::filesystem::is_directory(guides_dir)) {
+              for (const auto& entry : std::filesystem::directory_iterator(guides_dir)) {
+                if (entry.is_regular_file() && entry.path().extension() == ".png") {
+                  std::string filename = entry.path().filename().string();
+                  std::string stem = entry.path().stem().string();
+                  if (has_suffix(stem, "_wide") || has_suffix(stem, "-wide")) {
+                    continue;
+                  }
+                  available_guides.push_back(filename);
+                }
+              }
+            }
+            
+            // Sort alphabetically
+            std::sort(available_guides.begin(), available_guides.end());
+            
+            // Find current guide index
+            auto it = std::find(available_guides.begin(), available_guides.end(), current_guide);
+            current_guide_index = (it != available_guides.end()) ? std::distance(available_guides.begin(), it) : 0;
+            
+            guides_scanned = true;
+          }
+          
+          if (!available_guides.empty()) {
+            const char* preview = current_guide_index < available_guides.size() ? 
+                                 available_guides[current_guide_index].c_str() : "blades.png";
+            
+            {
+              ScopedAccentComboStyle accent_combo_style;
+              if (ImGui::BeginCombo("Guide Panel Image", preview)) {
+                for (int i = 0; i < static_cast<int>(available_guides.size()); ++i) {
+                  bool is_selected = (current_guide_index == i);
+                  if (ImGui::Selectable(available_guides[i].c_str(), is_selected)) {
+                    current_guide_index = i;
+                    c_guide->SetConfigValue(available_guides[i]);
+                    config::SaveConfig();
+                  }
+                  if (is_selected) {
+                    ImGui::SetItemDefaultFocus();
+                  }
+                }
+                ImGui::EndCombo();
+              }
+            }
+            if (ImGui::IsItemFocused()) {
+              tooltip = "Select a guide panel image from the Assets/guide_images/ folder. PNG files only.";
+            }
+          } else {
+            ImGui::Text("No guide images found in Assets/guide_images/");
+          }
+
+          // Background image selection
+          auto c_background = dynamic_cast<cvar::ConfigVar<std::string>*>(
+              cvar::ConfigVars->find("ui_background_image")->second);
+          std::string current_background = c_background ? c_background->GetTypedConfigValue() : "default.png";
+          
+          // Scan for available background image files
+          static std::vector<std::string> available_backgrounds;
+          static int current_background_index = 0;
+          static bool backgrounds_scanned = false;
+          
+          if (!backgrounds_scanned) {
+            available_backgrounds.clear();
+            
+            // Scan Assets/backgrounds/ folder
+            std::string backgrounds_dir = "Assets/backgrounds/";
+            if (std::filesystem::exists(backgrounds_dir) && std::filesystem::is_directory(backgrounds_dir)) {
+              for (const auto& entry : std::filesystem::directory_iterator(backgrounds_dir)) {
+                if (entry.is_regular_file() && entry.path().extension() == ".png") {
+                  available_backgrounds.push_back(entry.path().filename().string());
+                }
+              }
+            }
+            
+            // Also scan content path if available
+            auto ccontent_root = dynamic_cast<cvar::ConfigVar<std::filesystem::path>*>(
+                cvar::ConfigVars->find("content_root")->second);
+            std::string content_path = ccontent_root->GetTypedConfigValue().string();
+            if (!content_path.empty()) {
+              std::string content_backgrounds_dir = content_path + "/backgrounds/";
+              if (std::filesystem::exists(content_backgrounds_dir) && std::filesystem::is_directory(content_backgrounds_dir)) {
+                for (const auto& entry : std::filesystem::directory_iterator(content_backgrounds_dir)) {
+                  if (entry.is_regular_file() && entry.path().extension() == ".png") {
+                    std::string filename = entry.path().filename().string();
+                    // Avoid duplicates
+                    if (std::find(available_backgrounds.begin(), available_backgrounds.end(), filename) == available_backgrounds.end()) {
+                      available_backgrounds.push_back(filename);
+                    }
+                  }
+                }
+              }
+            }
+            
+            // Sort alphabetically
+            std::sort(available_backgrounds.begin(), available_backgrounds.end());
+            
+            // Find current background index
+            auto it = std::find(available_backgrounds.begin(), available_backgrounds.end(), current_background);
+            current_background_index = (it != available_backgrounds.end()) ? std::distance(available_backgrounds.begin(), it) : 0;
+            
+            backgrounds_scanned = true;
+          }
+          
+          if (!available_backgrounds.empty()) {
+            const char* preview = current_background_index < available_backgrounds.size() ? 
+                                 available_backgrounds[current_background_index].c_str() : "default.png";
+            
+            {
+              ScopedAccentComboStyle accent_combo_style;
+              if (ImGui::BeginCombo("Background Image", preview)) {
+                for (int i = 0; i < static_cast<int>(available_backgrounds.size()); ++i) {
+                  bool is_selected = (current_background_index == i);
+                  if (ImGui::Selectable(available_backgrounds[i].c_str(), is_selected)) {
+                    current_background_index = i;
+                    c_background->SetConfigValue(available_backgrounds[i]);
+                    config::SaveConfig();
+                    background_fallback_tex_.reset();
+                  }
+                  if (is_selected) {
+                    ImGui::SetItemDefaultFocus();
+                  }
+                }
+                ImGui::EndCombo();
+              }
+            }
+            if (ImGui::IsItemFocused()) {
+              tooltip = "Select a background image from the Assets/backgrounds/ folder. PNG files only.";
+            }
+          } else {
+            ImGui::Text("No background images found in Assets/backgrounds/");
+          }
+
+          // Custom background image - lets the user pick any image file
+          // from storage instead of the Assets/backgrounds/ presets above.
+          // Only the plain background layer changes; the blade tab bar and
+          // interface overlay are drawn on top of this exactly as before.
+          auto c_custom_background = dynamic_cast<cvar::ConfigVar<std::string>*>(
+              cvar::ConfigVars->find("ui_custom_background_path")->second);
+          std::string custom_background_path =
+              c_custom_background ? c_custom_background->GetTypedConfigValue()
+                                  : "";
+
+          if (!custom_background_path.empty()) {
+            ImGui::TextWrapped("Custom background: %s",
+                               std::filesystem::path(custom_background_path)
+                                   .filename()
+                                   .string()
+                                   .c_str());
+          }
+
+          if (ImGui::Button(custom_background_path.empty()
+                                ? "Browse for Custom Background..."
+                                : "Change Custom Background...")) {
+            imgui_drawer()->SetIgnoreInput(true);
+            UWP::SelectFile([this, c_custom_background](std::string file_path) {
+              imgui_drawer()->SetIgnoreInput(false);
+              if (file_path.empty() || c_custom_background == nullptr) {
+                return;
+              }
+              c_custom_background->SetConfigValue(file_path);
+              config::SaveConfig();
+              background_fallback_tex_.reset();
+            });
+          }
+          if (ImGui::IsItemFocused()) {
+            tooltip =
+                "Pick any image file to use as the frontend background. "
+                "Overrides the Background Image preset above until cleared.";
+          }
+
+          if (!custom_background_path.empty()) {
+            ImGui::SameLine();
+            if (ImGui::Button("Clear Custom Background")) {
+              c_custom_background->SetConfigValue(std::string());
+              config::SaveConfig();
+              background_fallback_tex_.reset();
+            }
+            if (ImGui::IsItemFocused()) {
+              tooltip = "Revert to the Background Image preset above.";
+            }
+          }
+
+          // Dynamic game backgrounds toggle
+          auto c_dynamic_bg = dynamic_cast<cvar::ConfigVar<bool>*>(
+              cvar::ConfigVars->find("ui_enable_dynamic_game_backgrounds")->second);
+          if (ImGui::Checkbox("Enable Dynamic Game Backgrounds", 
+                              c_dynamic_bg->current_value())) {
+            c_dynamic_bg->SetConfigValue(!c_dynamic_bg->GetTypedConfigValue());
+            config::SaveConfig();
+          }
+          if (ImGui::IsItemFocused()) {
+            tooltip = "Enable or disable game-specific background artwork in the frontend. When disabled, only the selected background image will be shown.";
+          }
+
+          // Hide tabs text toggle
+          auto c_hide_tabs = dynamic_cast<cvar::ConfigVar<bool>*>(
+              cvar::ConfigVars->find("ui_hide_tabs_text")->second);
+          if (ImGui::Checkbox("Hide Tabs Text", 
+                              c_hide_tabs->current_value())) {
+            c_hide_tabs->SetConfigValue(!c_hide_tabs->GetTypedConfigValue());
+            config::SaveConfig();
+          }
+          if (ImGui::IsItemFocused()) {
+            tooltip = "Hide or show the text labels for tabs (games, settings, paths, about) in the frontend.";
+          }
+
+          auto c_border_color = dynamic_cast<cvar::ConfigVar<std::string>*>(
+              cvar::ConfigVars->find("ui_border_color")->second);
+          std::string current_border_color =
+              c_border_color ? c_border_color->GetTypedConfigValue() : "green";
+          const char* border_color_values[] = {"green",  "purple", "red",
+                                               "orange", "blue",   "yellow",
+                                               "grey",   "black",  "white"};
+          const char* border_color_labels[] = {
+              "Green (#61C032)", "Purple", "Red",   "Orange",
+              "Blue",            "Yellow", "Grey", "Black", "White"};
+          int current_border_color_index = 0;
+          for (int i = 0;
+               i < static_cast<int>(sizeof(border_color_values) /
+                                    sizeof(border_color_values[0]));
+               ++i) {
+            if (current_border_color == border_color_values[i]) {
+              current_border_color_index = i;
+              break;
+            }
+          }
+          {
+            ScopedAccentComboStyle accent_combo_style;
+            if (ImGui::BeginCombo("UI Accent Color",
+                                  border_color_labels[current_border_color_index])) {
+              for (int i = 0;
+                   i < static_cast<int>(sizeof(border_color_values) /
+                                        sizeof(border_color_values[0]));
+                   ++i) {
+                bool is_selected = current_border_color_index == i;
+                if (ImGui::Selectable(border_color_labels[i], is_selected)) {
+                  current_border_color_index = i;
+                  c_border_color->SetConfigValue(border_color_values[i]);
+                  config::SaveConfig();
+                }
+                if (is_selected) {
+                  ImGui::SetItemDefaultFocus();
+                }
+              }
+              ImGui::EndCombo();
+            }
+          }
+          if (ImGui::IsItemFocused()) {
+            tooltip = "Choose the frontend accent color used for borders, checkboxes, combo accents, and header backgrounds.";
+          }
+
+          // Text effect combo box
+          auto c_text_effect = dynamic_cast<cvar::ConfigVar<std::string>*>(
+              cvar::ConfigVars->find("ui_text_effect")->second);
+          std::string current_effect = c_text_effect ? c_text_effect->GetTypedConfigValue() : "none";
+          
+          const char* text_effects[] = {"shadow", "lift", "stroke_fill", "glow",
+                                        "outline", "double_shadow", "bold",
+                                        "none"};
+          int current_effect_index = 0;
+          for (int i = 0; i < static_cast<int>(sizeof(text_effects) / sizeof(text_effects[0]));
+               ++i) {
+            if (current_effect == text_effects[i]) {
+              current_effect_index = i;
+              break;
+            }
+          }
+          
+          const char* preview = text_effects[current_effect_index];
+          {
+            ScopedAccentComboStyle accent_combo_style;
+            if (ImGui::BeginCombo("Text Effect", preview)) {
+              for (int i = 0;
+                   i < static_cast<int>(sizeof(text_effects) / sizeof(text_effects[0]));
+                   ++i) {
+                bool is_selected = (current_effect_index == i);
+                if (ImGui::Selectable(text_effects[i], is_selected)) {
+                  current_effect_index = i;
+                  c_text_effect->SetConfigValue(text_effects[i]);
+                  config::SaveConfig();
+                }
+                if (is_selected) {
+                  ImGui::SetItemDefaultFocus();
+                }
+              }
+              ImGui::EndCombo();
+            }
+          }
+          if (ImGui::IsItemFocused()) {
+            tooltip = "Apply a frontend text effect. Options include shadow, lift, stroke + fill, glow, outline, double shadow, and bold.";
+          }
+
+          auto c_text_color = dynamic_cast<cvar::ConfigVar<std::string>*>(
+              cvar::ConfigVars->find("ui_text_color")->second);
+          std::string current_text_color =
+              c_text_color ? c_text_color->GetTypedConfigValue() : "white";
+          const char* text_colors[] = {"white", "black"};
+          int current_text_color_index = current_text_color == "black" ? 1 : 0;
+          {
+            ScopedAccentComboStyle accent_combo_style;
+            if (ImGui::BeginCombo("Text Color", text_colors[current_text_color_index])) {
+              for (int i = 0; i < 2; ++i) {
+                bool is_selected = (current_text_color_index == i);
+                if (ImGui::Selectable(text_colors[i], is_selected)) {
+                  current_text_color_index = i;
+                  c_text_color->SetConfigValue(text_colors[i]);
+                  config::SaveConfig();
+                }
+                if (is_selected) {
+                  ImGui::SetItemDefaultFocus();
+                }
+              }
+              ImGui::EndCombo();
+            }
+          }
+          if (ImGui::IsItemFocused()) {
+            tooltip = "Choose whether monochrome frontend text renders as white or black. White is the default.";
+          }
+
+          auto c_text_brightness = dynamic_cast<cvar::ConfigVar<double>*>(
+              cvar::ConfigVars->find("ui_text_brightness")->second);
+          float text_brightness = c_text_brightness
+                                      ? static_cast<float>(
+                                            c_text_brightness->GetTypedConfigValue())
+                                      : 1.0f;
+          if (ImGui::SliderFloat("Text Brightness", &text_brightness, 0.25f,
+                                 2.0f, "%.2f")) {
+            c_text_brightness->SetConfigValue(static_cast<double>(text_brightness));
+            config::SaveConfig();
+          }
+          if (ImGui::IsItemFocused()) {
+            tooltip = "Adjust the overall brightness applied to frontend text.";
+          }
+
+          auto c_text_contrast = dynamic_cast<cvar::ConfigVar<double>*>(
+              cvar::ConfigVars->find("ui_text_contrast")->second);
+          float text_contrast = c_text_contrast
+                                    ? static_cast<float>(
+                                          c_text_contrast->GetTypedConfigValue())
+                                    : 1.0f;
+          if (ImGui::SliderFloat("Text Contrast", &text_contrast, 0.25f, 2.0f,
+                                 "%.2f")) {
+            c_text_contrast->SetConfigValue(static_cast<double>(text_contrast));
+            config::SaveConfig();
+          }
+          if (ImGui::IsItemFocused()) {
+            tooltip = "Adjust the overall contrast applied to frontend text.";
+          }
+        }
+
+        if (settings_selected_section == 8) {
+          auto c_host_guest_stacksync = dynamic_cast<cvar::ConfigVar<bool>*>(
+              cvar::ConfigVars->find("enable_host_guest_stack_synchronization")
+                  ->second);
+          if (ImGui::Checkbox("Enable Host Guest Stack Synchronization",
+                              c_host_guest_stacksync->current_value())) {
+            c_host_guest_stacksync->SetConfigValue(
+                !c_host_guest_stacksync->GetTypedConfigValue());
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_host_guest_stacksync->description();
+          }
+        }
+
+        if (settings_selected_section == 9) {
+          // There is no "internal_display_resolution" preset-index cvar -
+          // never was (grep confirms no DEFINE_ for it anywhere), despite
+          // this section unconditionally dereferencing a lookup for it -
+          // guaranteed crash, same bug class as the user_language one fixed
+          // earlier. The two cvars that actually exist and are actually
+          // read by GraphicsSystem::GetResolution() are
+          // custom_internal_display_resolution_x/y (0 on either means "not
+          // set, fall back to the guest's own XConfig setting") - rewritten
+          // below to drive those directly instead of a cvar that was never
+          // real.
+          auto find_custom_x =
+              cvar::ConfigVars->find("custom_internal_display_resolution_x");
+          auto find_custom_y =
+              cvar::ConfigVars->find("custom_internal_display_resolution_y");
+          auto c_internal_resolution_x =
+              find_custom_x != cvar::ConfigVars->end()
+                  ? dynamic_cast<cvar::ConfigVar<uint32_t>*>(
+                        find_custom_x->second)
+                  : nullptr;
+          auto c_internal_resolution_y =
+              find_custom_y != cvar::ConfigVars->end()
+                  ? dynamic_cast<cvar::ConfigVar<uint32_t>*>(
+                        find_custom_y->second)
+                  : nullptr;
+          if (!c_internal_resolution_x || !c_internal_resolution_y) {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+                               "Display resolution settings unavailable.");
+          } else {
+            struct ResolutionPreset {
+              const char* label;
+              uint32_t width;
+              uint32_t height;
+            };
+            static constexpr ResolutionPreset kResolutionPresets[] = {
+                {"640x480", 640, 480},     {"640x576", 640, 576},
+                {"720x480", 720, 480},     {"720x576", 720, 576},
+                {"800x600", 800, 600},     {"848x480", 848, 480},
+                {"1024x768", 1024, 768},   {"1152x864", 1152, 864},
+                {"1280x720", 1280, 720},   {"1280x768", 1280, 768},
+                {"1280x960", 1280, 960},   {"1280x1024", 1280, 1024},
+                {"1360x768", 1360, 768},   {"1440x900", 1440, 900},
+                {"1680x1050", 1680, 1050}, {"1920x540", 1920, 540},
+                {"1920x1080", 1920, 1080},
+            };
+
+            uint32_t current_x = c_internal_resolution_x->GetTypedConfigValue();
+            uint32_t current_y = c_internal_resolution_y->GetTypedConfigValue();
+            const char* resolution_preview =
+                (current_x == 0 && current_y == 0) ? "Default (guest setting)"
+                                                    : "Custom";
+            for (const auto& preset : kResolutionPresets) {
+              if (current_x == preset.width && current_y == preset.height) {
+                resolution_preview = preset.label;
+                break;
+              }
+            }
+            {
+              ScopedAccentComboStyle accent_combo_style;
+              if (ImGui::BeginCombo("Internal Display Resolution",
+                                    resolution_preview)) {
+                if (ImGui::Selectable("Default (guest setting)",
+                                      current_x == 0 && current_y == 0)) {
+                  c_internal_resolution_x->SetConfigValue(0);
+                  c_internal_resolution_y->SetConfigValue(0);
+                  config::SaveConfig();
+                }
+                for (const auto& preset : kResolutionPresets) {
+                  if (ImGui::Selectable(preset.label,
+                                        current_x == preset.width &&
+                                            current_y == preset.height)) {
+                    c_internal_resolution_x->SetConfigValue(preset.width);
+                    c_internal_resolution_y->SetConfigValue(preset.height);
+                    config::SaveConfig();
+                  }
+                }
+                if (ImGui::Selectable("Custom",
+                                      resolution_preview[0] == 'C')) {
+                  // Leave x/y as-is - the Custom Width/Height fields below
+                  // edit them directly. Nudge off (0, 0) so the combo
+                  // doesn't keep showing "Default" if the user picks
+                  // "Custom" without having typed anything yet.
+                  if (current_x == 0 && current_y == 0) {
+                    c_internal_resolution_x->SetConfigValue(1280);
+                    c_internal_resolution_y->SetConfigValue(720);
+                    config::SaveConfig();
+                  }
+                }
+                ImGui::EndCombo();
+              }
+            }
+
+            if (ImGui::IsItemFocused()) {
+              tooltip = c_internal_resolution_x->description();
+            }
+
+            int custom_x = static_cast<int>(current_x);
+            if (ImGui::InputInt("Custom Resolution Width", &custom_x)) {
+              if (custom_x < 1) custom_x = 1;
+              if (custom_x > 1920) custom_x = 1920;
+              c_internal_resolution_x->SetConfigValue(
+                  static_cast<uint32_t>(custom_x));
+              config::SaveConfig();
+            }
+
+            int custom_y = static_cast<int>(current_y);
+            if (ImGui::InputInt("Custom Resolution Height", &custom_y)) {
+              if (custom_y < 1) custom_y = 1;
+              if (custom_y > 1080) custom_y = 1080;
+              c_internal_resolution_y->SetConfigValue(
+                  static_cast<uint32_t>(custom_y));
+              config::SaveConfig();
+            }
+          }
+
+          auto c_widescreen = FindConfigVar<bool>("widescreen");
+          if (c_widescreen) {
+            if (ImGui::Checkbox("Widescreen",
+                                c_widescreen->current_value())) {
+              c_widescreen->SetConfigValue(!c_widescreen->GetTypedConfigValue());
+              config::SaveConfig();
+            }
+
+            if (ImGui::IsItemFocused()) {
+              tooltip = c_widescreen->description();
+            }
+          }
+
+          auto c_use_50hz_mode = FindConfigVar<bool>("use_50Hz_mode");
+          if (c_use_50hz_mode) {
+            if (ImGui::Checkbox("Use 50Hz Video Mode",
+                                c_use_50hz_mode->current_value())) {
+              c_use_50hz_mode->SetConfigValue(
+                  !c_use_50hz_mode->GetTypedConfigValue());
+              config::SaveConfig();
+            }
+
+            if (ImGui::IsItemFocused()) {
+              tooltip = c_use_50hz_mode->description();
+            }
+          }
+
+          auto c_interlaced = FindConfigVar<bool>("interlaced");
+          if (c_interlaced) {
+            if (ImGui::Checkbox("Interlaced Video Mode",
+                                c_interlaced->current_value())) {
+              c_interlaced->SetConfigValue(!c_interlaced->GetTypedConfigValue());
+              config::SaveConfig();
+            }
+
+            if (ImGui::IsItemFocused()) {
+              tooltip = c_interlaced->description();
+            }
+          }
+        }
+
+        if (settings_selected_section == 10) {
+          auto c_left_deadzone = dynamic_cast<cvar::ConfigVar<double>*>(
+              cvar::ConfigVars->find("left_stick_deadzone_percentage")->second);
+          auto c_right_deadzone = dynamic_cast<cvar::ConfigVar<double>*>(
+              cvar::ConfigVars->find("right_stick_deadzone_percentage")->second);
+          auto c_left_trigger_deadzone = dynamic_cast<cvar::ConfigVar<double>*>(
+              cvar::ConfigVars->find("left_trigger_deadzone_percentage")
+                  ->second);
+          auto c_right_trigger_deadzone =
+              dynamic_cast<cvar::ConfigVar<double>*>(
+                  cvar::ConfigVars->find("right_trigger_deadzone_percentage")
+                      ->second);
+          auto c_vibration = dynamic_cast<cvar::ConfigVar<bool>*>(
+              cvar::ConfigVars->find("vibration")->second);
+
+          float left_deadzone =
+              static_cast<float>(c_left_deadzone->GetTypedConfigValue());
+          if (ImGui::SliderFloat("Left Stick Deadzone", &left_deadzone, 0.0f,
+                                 1.0f, "%.2f")) {
+            c_left_deadzone->SetConfigValue(static_cast<double>(left_deadzone));
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_left_deadzone->description();
+          }
+
+          float right_deadzone =
+              static_cast<float>(c_right_deadzone->GetTypedConfigValue());
+          if (ImGui::SliderFloat("Right Stick Deadzone", &right_deadzone, 0.0f,
+                                 1.0f, "%.2f")) {
+            c_right_deadzone->SetConfigValue(
+                static_cast<double>(right_deadzone));
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_right_deadzone->description();
+          }
+
+          float left_trigger_deadzone =
+              static_cast<float>(c_left_trigger_deadzone->GetTypedConfigValue());
+          if (ImGui::SliderFloat("Left Trigger Deadzone", &left_trigger_deadzone,
+                                 0.0f, 1.0f, "%.2f")) {
+            c_left_trigger_deadzone->SetConfigValue(
+                static_cast<double>(left_trigger_deadzone));
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_left_trigger_deadzone->description();
+          }
+
+          float right_trigger_deadzone =
+              static_cast<float>(c_right_trigger_deadzone->GetTypedConfigValue());
+          if (ImGui::SliderFloat("Right Trigger Deadzone",
+                                 &right_trigger_deadzone, 0.0f, 1.0f,
+                                 "%.2f")) {
+            c_right_trigger_deadzone->SetConfigValue(
+                static_cast<double>(right_trigger_deadzone));
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_right_trigger_deadzone->description();
+          }
+
+          if (ImGui::Checkbox("Controller Vibration",
+                              c_vibration->current_value())) {
+            c_vibration->SetConfigValue(!c_vibration->GetTypedConfigValue());
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_vibration->description();
+          }
+
+          auto c_guide_button = dynamic_cast<cvar::ConfigVar<bool>*>(
+              cvar::ConfigVars->find("guide_button")->second);
+          if (ImGui::Checkbox("Forward Guide Button",
+                              c_guide_button->current_value())) {
+            c_guide_button->SetConfigValue(
+                !c_guide_button->GetTypedConfigValue());
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = c_guide_button->description();
+          }
+        }
+
+        if (settings_selected_section == 11) {
+          auto cl = dynamic_cast<cvar::ConfigVar<std::string>*>(
+              cvar::ConfigVars->find("cl")->second);
+          std::string cl_text = (std::string)cl->GetTypedConfigValue();
+          if (cl_text != cl_buffer_ && cl_buffer_[0] == '\0') {
+            xe::string_util::copy_truncating(cl_buffer_, cl_text,
+                                             sizeof(cl_buffer_));
+          }
+
+          if (ImGui::Button("Set CL")) {
+            UWP::ShowKeyboard();
+            ImGui::SetKeyboardFocusHere();
+          }
+
+          ImGui::SameLine();
+          if (ImGui::InputText("##cl-text", cl_buffer_, 128)) {
+            cl->SetConfigValue(cl_buffer_);
+            config::SaveConfig();
+          }
+
+          if (ImGui::IsItemFocused()) {
+            tooltip = cl->description();
+          }
+        }
+
+            ImGui::PopItemWidth();
+            ImGui::PopTextWrapPos();
+            ImGui::PopStyleVar(2);
+            ImGui::PopStyleColor();
+            if (disable_right_nav) {
+              ImGui::PopItemFlag();
+            }
+
+            ImGui::EndTable();
+          }
+          ImGui::Unindent(settings_content_offset_x);
+          ImGui::EndChild();
+        }
+        ImGui::PopStyleVar();
+
+      }
+
+      if (active_frontend_page_ == FrontendPage::kPaths) {
+        if (!ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) {
+          if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
+            // B button pressed - clear selection and exit list focus
+            if (selected_path_ != "") {
+              selected_path_ = "";
+              // Request focus to move away from the list
+              paths_focus_requested = true;
+            }
+          }
+          if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceLeft, false)) {
+            // X button pressed - request focus to paths list
+            paths_focus_requested = true;
+          }
+        }
+
+        const float paths_plane_margin = 40.0f;
+        ImVec2 paths_plane_origin = ImGui::GetCursorPos();
+        ImVec2 paths_plane_avail = ImGui::GetContentRegionAvail();
+        ImVec2 paths_plane_size(
+            std::max(0.0f, paths_plane_avail.x - (paths_plane_margin * 2.0f)),
+            std::max(0.0f, paths_plane_avail.y - (paths_plane_margin * 2.0f)));
+        ImGui::SetCursorPos(ImVec2(paths_plane_origin.x + paths_plane_margin,
+                                   paths_plane_origin.y + paths_plane_margin));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        if (ImGui::BeginChild("##paths_editor_plane", paths_plane_size, false)) {
+          if (paths_focus_requested) {
+            ImGui::SetWindowFocus();
+          }
+          const float paths_content_offset_x = 15.0f * display_scale;
+          const float paths_content_offset_y = 15.0f * display_scale;
+          ImGui::Indent(paths_content_offset_x);
+          ImGui::Dummy(ImVec2(0.0f, paths_content_offset_y));
+
+          auto paths_list = UWP::GetPaths();
+          if (ImGui::BeginListBox("##folders")) {
+            for (size_t i = 0; i < paths_list.size(); ++i) {
+              if (paths_focus_requested && i == 0) {
+                ImGui::SetKeyboardFocusHere();
+              }
+              bool is_selected = (selected_path_ == paths_list[i]);
+              if (ImGui::Selectable(paths_list[i].c_str(), is_selected)) {
+                selected_path_ = paths_list[i];
+              }
+              if (ImGui::IsItemFocused()) {
+                paths_focus_requested = false;
+              }
+            }
+            ImGui::EndListBox();
+          }
+          
+          // Allow navigation out of list when Down is pressed (regardless of selection)
+          static bool navigating_to_buttons = false;
+          if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown, false) && 
+              !ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
+            // Move focus to buttons below
+            paths_focus_requested = false;
+            navigating_to_buttons = true;
+          }
+
+          if (selected_path_ == "") {
+            ImGui::BeginDisabled();
+          }
+
+          ImU32 path_button_color = selected_path_ == ""
+                                        ? IM_COL32(160, 160, 160, 255)
+                                        : IM_COL32(255, 255, 255, 255);
+          if (draw_text_button("##remove_path_button", "Remove Path",
+                               ImVec2(0.0f, 0.0f), path_button_color)) {
+            if (selected_path_ != "") {
+              auto paths = UWP::GetPaths();
+              paths.erase(std::remove(paths.begin(), paths.end(), selected_path_),
+                          paths.end());
+              UWP::SetGamePaths(paths);
+              selected_path_ = "";
+              // Reset focus to allow navigation after removal
+              paths_focus_requested = true;
+            }
+          }
+          // Set focus to Remove Path button when navigating from list
+          if (navigating_to_buttons && selected_path_ != "") {
+            ImGui::SetKeyboardFocusHere();
+            navigating_to_buttons = false;
+          }
+          if (ImGui::IsItemFocused()) {
+            paths_focus_requested = false;
+            navigating_to_buttons = false;
+          }
+
+          if (selected_path_ == "") {
+            ImGui::EndDisabled();
+          }
+
+          ImGui::SameLine();
+          if (paths_focus_requested && paths_list.empty()) {
+            ImGui::SetKeyboardFocusHere();
+          }
+          if (draw_text_button("##add_path_button", "Add Path")) {
+            imgui_drawer()->SetIgnoreInput(true);
+            UWP::SelectFolder([this](std::string path) {
+              if (path != "") {
+                if (!UWP::TestPathPermissions(path)) {
+                  show_path_warning_ = true;
+                } else {
+                  auto paths = UWP::GetPaths();
+                  paths.push_back(path);
+                  UWP::SetGamePaths(paths);
+                }
+              }
+
+              imgui_drawer()->SetIgnoreInput(false);
+              // Reset focus to allow navigation after folder selection
+              paths_focus_requested = true;
+            });
+          }
+          if (ImGui::IsItemFocused()) {
+            paths_focus_requested = false;
+          }
+
+          auto ccache_root =
+              dynamic_cast<cvar::ConfigVar<std::filesystem::path>*>(
+                  cvar::ConfigVars->find("cache_root")->second);
+          auto ccontent_root =
+              dynamic_cast<cvar::ConfigVar<std::filesystem::path>*>(
+                  cvar::ConfigVars->find("content_root")->second);
+          auto cstorage_root =
+              dynamic_cast<cvar::ConfigVar<std::filesystem::path>*>(
+                  cvar::ConfigVars->find("storage_root")->second);
+
+          if (draw_text_button("##set_config_folders_path_button",
+                               "Set Config Folders Path")) {
+            imgui_drawer()->SetIgnoreInput(true);
+            UWP::SelectFolder([this, ccache_root, ccontent_root,
+                               cstorage_root](std::string path) {
+              if (path != "") {
+                if (!UWP::TestPathPermissions(path)) {
+                  ImGui::OpenPopup("Warning");
+                } else {
+                  ccache_root->SetConfigValue(
+                      std::filesystem::path(path + "\\cache"));
+                  ccontent_root->SetConfigValue(
+                      std::filesystem::path(path + "\\content"));
+                  cstorage_root->SetConfigValue(
+                      std::filesystem::path(path + "\\storage"));
+                  config::SaveConfig();
+                }
+              }
+
+              imgui_drawer()->SetIgnoreInput(false);
+              // Reset focus to allow navigation after folder selection
+              paths_focus_requested = true;
+            });
+          }
+          if (ImGui::IsItemFocused()) {
+            paths_focus_requested = false;
+          }
+
+          ImGui::SameLine();
+
+          ImGui::TextWrapped(
+              "Remember to configure your USB filesystem so its paths work ");
+
+          if (show_path_warning_) {
+            ImGui::OpenPopup("Warning");
+            show_path_warning_ = false;
+            ImGui::SetNextWindowSize(
+                ImVec2(1600 * display_scale, 150 * display_scale));
+          }
+
+          if (ImGui::BeginPopupModal("Warning")) {
+            ImGui::TextWrapped(
+                "The folder path you have selected is not writable! Please check "
+                "that you have the correct permissions for the folder you have "
+                "selected.");
+            ImGui::Separator();
+            if (draw_text_button("##path_warning_ok_button", "OK")) {
+              ImGui::CloseCurrentPopup();
+            }
+
+            ImGui::EndPopup();
+          }
+
+          ImGui::EndChild();
+        }
+        ImGui::PopStyleVar();
+
+      }
+
+      if (active_frontend_page_ == FrontendPage::kAbout) {
+        if (!ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) &&
+            ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
+          about_focus_requested = true;
+        }
+
+        const float about_plane_margin = 40.0f;
+        ImVec2 about_plane_origin = ImGui::GetCursorPos();
+        ImVec2 about_plane_avail = ImGui::GetContentRegionAvail();
+        ImVec2 about_plane_size(
+            std::max(0.0f, about_plane_avail.x - (about_plane_margin * 2.0f)),
+            std::max(0.0f, about_plane_avail.y - (about_plane_margin * 2.0f)));
+        ImGui::SetCursorPos(ImVec2(about_plane_origin.x + about_plane_margin,
+                                   about_plane_origin.y + about_plane_margin));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        if (ImGui::BeginChild("##about_editor_plane", about_plane_size, false)) {
+          if (about_focus_requested) {
+            ImGui::SetWindowFocus();
+          }
+          const float about_content_offset_x = 15.0f * display_scale;
+          ImGui::Indent(about_content_offset_x);
+
+          ImGui::TextWrapped(
+              "Xenia Canary UWP 1.1.7.1\n"
+              "A Unofficial fork of Xenia focusing on Xbox support and a blades "
+              "style frontend.\n");
+
+          ImGui::Spacing();
+
+          if (about_focus_requested) {
+            ImGui::SetKeyboardFocusHere();
+          }
+          if (draw_text_button("##xbox_port_donations_button",
+                               "Xbox Port Donations")) {
+            LaunchWebBrowser("https://ko-fi.com/danp142");
+          }
+          if (ImGui::IsItemFocused()) {
+            about_focus_requested = false;
+          }
+          ImGui::Spacing();
+          if (draw_text_button("##upstream_donations_button",
+                               "Upstream Donations")) {
+            LaunchWebBrowser("https://www.patreon.com/xenia_project");
+          }
+          ImGui::Spacing();
+          if (draw_text_button("##xbox_emulation_hub_button",
+                               "Xbox Emulation Hub")) {
+            LaunchWebBrowser("https://discord.gg/WCmxvvxHqu");
+          }
+          ImGui::Spacing();
+          if (draw_text_button("##emulation_revival_button",
+                               "Emulation Revival")) {
+            LaunchWebBrowser("https://discord.gg/Rr6vKuNjam");
+          }
+          ImGui::Spacing();
+          if (draw_text_button("##get_source_code_button",
+                               "Get the Source Code")) {
+            LaunchWebBrowser("https://github.com/danprice142/xenia-canary-uwp");
+          }
+
+          ImGui::Spacing();
+          static int dev_store_preview_index = -1;
+          const char* dev_store_options[] = {"XB Dev Store", "Revival Dev Store"};
+          const char* dev_store_urls[] = {
+              "https://xbdev.store/",
+              "https://emulationrevival.github.io/index.html",
+          };
+          const char* dev_store_preview =
+              dev_store_preview_index >= 0
+                  ? dev_store_options[dev_store_preview_index]
+                  : "Our App Stores";
+          ImGui::PushItemWidth(220.0f * display_scale);
+          {
+            ScopedAccentComboStyle accent_combo_style;
+            if (ImGui::BeginCombo("##app_stores_combo", dev_store_preview)) {
+              for (int i = 0; i < 2; ++i) {
+                bool selected = dev_store_preview_index == i;
+                if (ImGui::Selectable(dev_store_options[i], selected)) {
+                  dev_store_preview_index = i;
+                  LaunchWebBrowser(dev_store_urls[i]);
+                }
+                if (selected) {
+                  ImGui::SetItemDefaultFocus();
+                }
+              }
+              ImGui::EndCombo();
+            }
+          }
+          ImGui::PopItemWidth();
+          if (ImGui::IsItemFocused()) {
+            about_focus_requested = false;
+          }
+
+          ImGui::Spacing();
+          ImGui::TextWrapped(
+              "This UWP Xbox Port was originally made by SirMangler and the "
+              "hardwork of all the Xenia Project contributers over the years\n");
+
+          ImGui::EndChild();
+          ImGui::Unindent(about_content_offset_x);
+        }
+        ImGui::PopStyleVar();
+
+      }
+
+      }
+      ImGui::EndChild();
+      ImGui::PopStyleVar(2);
+      ImGui::PopStyleColor();
+
+      ImGui::TableNextColumn();
+      if (ImGui::BeginChild("##right_rail", ImVec2(0, 0), false,
+                            ImGuiWindowFlags_NoScrollbar)) {
+        draw_nav_button("##paths_tab", FrontendPage::kPaths);
+        draw_nav_button("##about_tab", FrontendPage::kAbout);
+        ImGui::Dummy(ImVec2(0.0f, 24.0f * display_scale));
+      }
+      ImGui::EndChild();
+
+      ImGui::EndTable();
+    }
+
+    frontend_splitter.Merge(frontend_draw_list);
+    
+    const float ux = io.DisplaySize.x / 1024.0f;
+    const float uy = io.DisplaySize.y / 576.0f;
+
+    auto draw_rotated_text = [frontend_draw_list](const char* text,
+                                                  ImVec2 anchor,
+                                                  float font_size,
+                                                  ImU32 color,
+                                                  float rotation_radians) {
+      DrawRotatedTextWithConfiguredEffect(frontend_draw_list, ImGui::GetFont(),
+                                          font_size, anchor, color, text,
+                                          rotation_radians);
+    };
+
+    auto draw_button_icon = [frontend_draw_list, this](char letter,
+                                                        ImVec2 center,
+                                                        float size) {
+      auto tex = GetOrCreateButtonTexture(letter);
+      if (!tex) {
+        return;
+      }
+      const ImVec2 half(size * 0.5f, size * 0.5f);
+      frontend_draw_list->AddImage(
+          reinterpret_cast<ImTextureID>(tex.get()),
+          ImVec2(center.x - half.x, center.y - half.y),
+          ImVec2(center.x + half.x, center.y + half.y));
+    };
+
+    const char* overlay_header_text = "Select a Game";
+    switch (active_frontend_page_) {
+      case FrontendPage::kGameList:
+        overlay_header_text = "Select a Game";
+        break;
+      case FrontendPage::kSettings:
+        overlay_header_text = "Make some Tweaks";
+        break;
+      case FrontendPage::kPaths:
+        overlay_header_text = "Choose your Path";
+        break;
+      case FrontendPage::kAbout:
+        overlay_header_text = "Get the Info";
+        break;
+      default:
+        overlay_header_text = "Select a Game";
+        break;
+    }
+
+    frontend_draw_list->PushClipRect(ImVec2(0.0f, 0.0f), io.DisplaySize, false);
+
+    DrawTextWithConfiguredEffect(frontend_draw_list, ImGui::GetFont(),
+                                 26.0f * uy,
+                                 ImVec2(150.0f * ux, 18.0f * uy),
+                                 IM_COL32(228, 228, 228, 255),
+                                 overlay_header_text);
+    constexpr float kRotateClockwise90 = -3.14159265f * 0.5f;
+    constexpr float kRotateCounterClockwise90 = 3.14159265f * 0.5f;
+
+    struct RailSlot {
+      ImVec2 pos;
+      float rotation;
+      float font_size;
+    };
+    const RailSlot slots[4] = {
+        {ImVec2(125.0f * ux, 115.0f * uy), kRotateCounterClockwise90,
+         26.0f * uy},
+        {ImVec2(81.0f * ux, 129.0f * uy), kRotateCounterClockwise90,
+         22.0f * uy},
+        {ImVec2(926.0f * ux, 137.0f * uy), kRotateCounterClockwise90,
+         26.0f * uy},
+        {ImVec2(965.0f * ux, 147.0f * uy), kRotateCounterClockwise90,
+         22.0f * uy}};
+
+    const char* tab_labels[4] = {"games", "settings", "paths", "about"};
+    int active_index = static_cast<int>(active_frontend_page_);
+
+    // Check if tabs text should be hidden
+    auto c_hide_tabs = dynamic_cast<cvar::ConfigVar<bool>*>(
+        cvar::ConfigVars->find("ui_hide_tabs_text")->second);
+    bool hide_tabs_text = c_hide_tabs ? c_hide_tabs->GetTypedConfigValue() : false;
+
+    if (!hide_tabs_text) {
+      for (int i = 0; i < 4; ++i) {
+        int slot_index = (active_index + i) % 4;
+        draw_rotated_text(tab_labels[slot_index], slots[i].pos, slots[i].font_size,
+                          IM_COL32(0, 0, 0, 255), slots[i].rotation);
+      }
+    }
+    const float footer_text_size = 13.5f * uy;
+    const float footer_icon_size = 15.6f * uy;
+    xe::app::DrawFooterPrompt(frontend_draw_list, GetOrCreateButtonTexture('Y'),
+                              footer_text_size, footer_icon_size, "Search",
+                              526.0f * uy, 178.0f * ux, -13.0f * ux);
+    xe::app::DrawFooterPrompt(frontend_draw_list, GetOrCreateButtonTexture('X'),
+                              footer_text_size, footer_icon_size, "Game Menu",
+                              543.0f * uy, 165.0f * ux, -17.0f * ux);
+    xe::app::DrawFooterPrompt(frontend_draw_list, GetOrCreateButtonTexture('B'),
+                              footer_text_size, footer_icon_size, "Back",
+                              526.0f * uy, 816.0f * ux, 35.0f * ux);
+    xe::app::DrawFooterPrompt(frontend_draw_list, GetOrCreateButtonTexture('A'),
+                              footer_text_size, footer_icon_size, "Select",
+                              543.0f * uy, 825.0f * ux, 42.0f * ux);
+    if (auto logo = GetOrCreateXeniaLogo()) {
+      const float logo_aspect = logo->height > 0
+                                    ? static_cast<float>(logo->width) /
+                                          static_cast<float>(logo->height)
+                                    : 1.0f;
+      const float target_height = 42.0f * uy;
+      const float target_width = target_height * logo_aspect;
+      const ImVec2 logo_center(826.0f * ux, 34.0f * uy);
+      const ImVec2 logo_half_size(target_width * 0.5f, target_height * 0.5f);
+      const ImVec2 logo_min(logo_center.x - logo_half_size.x,
+                             logo_center.y - logo_half_size.y);
+      const ImVec2 logo_max(logo_center.x + logo_half_size.x,
+                             logo_center.y + logo_half_size.y);
+      frontend_draw_list->AddImage(reinterpret_cast<ImTextureID>(logo.get()),
+                                   logo_min, logo_max);
+    }
+
+    DrawNoProfilePrompt(io);
+
+    frontend_draw_list->PopClipRect();
+    
+    ImGui::End();
+  }
+  ImGui::PopStyleVar();
+  ImGui::PopStyleColor(3);
+
+  if (launch_after_draw && !launch_path_after_draw.empty()) {
+    emulator_window_.emulator_->LaunchPath(launch_path_after_draw);
+    Close();
+    return;
+  }
+}
+
+std::shared_ptr<ui::ImmediateTexture>
+EmulatorWindow::WinRTFrontendDialog::GetOrCreateBackground() {
+  if (background_tex_ != nullptr) {
+    return background_tex_;
+  }
+
+  std::string path;
+  
+  // Get the selected interface overlay from config
+  auto c_overlay = dynamic_cast<cvar::ConfigVar<std::string>*>(
+      cvar::ConfigVars->find("ui_interface_overlay_image")->second);
+  std::string overlay_name = c_overlay ? c_overlay->GetTypedConfigValue() : "blades.png";
+  
+  // Ensure the overlay name has .png extension
+  if (overlay_name.empty() || overlay_name.find('.') == std::string::npos) {
+    overlay_name = "blades.png";
+  }
+
+  auto ccontent_root = dynamic_cast<cvar::ConfigVar<std::filesystem::path>*>(
+      cvar::ConfigVars->find("content_root")->second);
+
+  std::string content_path = ccontent_root->GetTypedConfigValue().string();
+  if (!content_path.empty()) {
+    path = content_path + "/interface_overlays/" + overlay_name;
+  } else {
+    path = UWP::GetLocalState() + "/content/interface_overlays/" + overlay_name;
+  }
+
+  if (!std::filesystem::exists(path)) {
+    path = "Assets/interface_overlays/" + overlay_name;
+  }
+
+  // Fallback to blades.png if selected overlay doesn't exist
+  if (!std::filesystem::exists(path) && overlay_name != "blades.png") {
+    if (!content_path.empty()) {
+      path = content_path + "/interface_overlays/blades.png";
+    } else {
+      path = UWP::GetLocalState() + "/content/interface_overlays/blades.png";
+    }
+    
+    if (!std::filesystem::exists(path)) {
+      path = "Assets/interface_overlays/blades.png";
+    }
+  }
+
+  if (emulator_window_.immediate_drawer_ == nullptr) {
+    return nullptr;
+  }
+
+  int width = 0, height = 0, comp = 0;
+  auto data = stbi_load(path.c_str(), &width, &height, &comp, 4);
+  if (!data || width <= 0 || height <= 0) {
+    return nullptr;
+  }
+
+  auto tex = emulator_window_.immediate_drawer_->CreateTexture(
+      static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+      xe::ui::ImmediateTextureFilter::kLinear, false, data);
+  stbi_image_free(data);
+
+  background_tex_ = std::move(tex);
+  return background_tex_;
+}
+
+std::shared_ptr<ui::ImmediateTexture>
+EmulatorWindow::WinRTFrontendDialog::GetOrCreateBackgroundFallback() {
+  if (background_fallback_tex_ != nullptr) {
+    return background_fallback_tex_;
+  }
+
+  // A user-picked custom background takes priority over the preset picker
+  // below when set. Falls through to the presets if the file no longer
+  // exists (e.g. it was on removable storage that got disconnected).
+  auto c_custom_background = dynamic_cast<cvar::ConfigVar<std::string>*>(
+      cvar::ConfigVars->find("ui_custom_background_path")->second);
+  std::string custom_background_path =
+      c_custom_background ? c_custom_background->GetTypedConfigValue() : "";
+  if (!custom_background_path.empty()) {
+    auto custom_tex = GetOrCreateImageTexture(custom_background_path);
+    if (custom_tex != nullptr) {
+      background_fallback_tex_ = custom_tex;
+      return background_fallback_tex_;
+    }
+  }
+
+  std::string path;
+
+  // Get the selected background from config
+  auto c_background = dynamic_cast<cvar::ConfigVar<std::string>*>(
+      cvar::ConfigVars->find("ui_background_image")->second);
+  std::string background_name = c_background ? c_background->GetTypedConfigValue() : "default.png";
+  
+  // Ensure the background name has .png extension
+  if (background_name.empty() || background_name.find('.') == std::string::npos) {
+    background_name = "default.png";
+  }
+
+  auto ccontent_root = dynamic_cast<cvar::ConfigVar<std::filesystem::path>*>(
+      cvar::ConfigVars->find("content_root")->second);
+
+  std::string content_path = ccontent_root->GetTypedConfigValue().string();
+  if (!content_path.empty()) {
+    path = content_path + "/backgrounds/" + background_name;
+  } else {
+    path = UWP::GetLocalState() + "/content/backgrounds/" + background_name;
+  }
+
+  if (!std::filesystem::exists(path)) {
+    path = "Assets/backgrounds/" + background_name;
+  }
+
+  // Fallback to default.png if selected background doesn't exist
+  if (!std::filesystem::exists(path) && background_name != "default.png") {
+    if (!content_path.empty()) {
+      path = content_path + "/backgrounds/default.png";
+    } else {
+      path = UWP::GetLocalState() + "/content/backgrounds/default.png";
+    }
+    
+    if (!std::filesystem::exists(path)) {
+      path = "Assets/backgrounds/default.png";
+    }
+  }
+
+  if (emulator_window_.immediate_drawer_ == nullptr) {
+    return nullptr;
+  }
+
+  int width = 0, height = 0, comp = 0;
+  auto data = stbi_load(path.c_str(), &width, &height, &comp, 4);
+  if (!data || width <= 0 || height <= 0) {
+    return nullptr;
+  }
+
+  auto tex = emulator_window_.immediate_drawer_->CreateTexture(
+      static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+      xe::ui::ImmediateTextureFilter::kLinear, false, data);
+  stbi_image_free(data);
+
+  background_fallback_tex_ = std::move(tex);
+  return background_fallback_tex_;
+}
+
+std::shared_ptr<ui::ImmediateTexture>
+EmulatorWindow::WinRTFrontendDialog::GetOrCreateImageTexture(
+    const std::string& image_path) {
+  if (image_path.empty() || emulator_window_.immediate_drawer_ == nullptr ||
+      !std::filesystem::exists(image_path)) {
+    return nullptr;
+  }
+
+  auto cache_it = game_image_textures_.find(image_path);
+  if (cache_it != game_image_textures_.end() && cache_it->second != nullptr) {
+    return cache_it->second;
+  }
+
+  int width = 0, height = 0, comp = 0;
+  auto data = stbi_load(image_path.c_str(), &width, &height, &comp, 4);
+  if (!data || width <= 0 || height <= 0) {
+    return nullptr;
+  }
+
+  auto tex = emulator_window_.immediate_drawer_->CreateTexture(
+      static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+      xe::ui::ImmediateTextureFilter::kLinear, false, data);
+  stbi_image_free(data);
+  if (tex == nullptr) {
+    return nullptr;
+  }
+
+  game_image_textures_[image_path] = std::move(tex);
+  return game_image_textures_[image_path];
+}
+
+std::shared_ptr<ui::ImmediateTexture>
+EmulatorWindow::WinRTFrontendDialog::GetOrCreateXeniaLogo() {
+  if (xenia_logo_tex_ != nullptr) {
+    return xenia_logo_tex_;
+  }
+
+  std::string path = "Assets/xenia-logo.png";
+  if (!std::filesystem::exists(path)) {
+    return nullptr;
+  }
+
+  if (emulator_window_.immediate_drawer_ == nullptr) {
+    return nullptr;
+  }
+
+  int width = 0, height = 0, comp = 0;
+  auto data = stbi_load(path.c_str(), &width, &height, &comp, 4);
+  if (!data || width <= 0 || height <= 0) {
+    return nullptr;
+  }
+
+  auto tex = emulator_window_.immediate_drawer_->CreateTexture(
+      static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+      xe::ui::ImmediateTextureFilter::kLinear, false, data);
+  stbi_image_free(data);
+
+  xenia_logo_tex_ = std::move(tex);
+  return xenia_logo_tex_;
+}
+
+std::shared_ptr<ui::ImmediateTexture>
+EmulatorWindow::WinRTFrontendDialog::GetOrCreateButtonTexture(char button) {
+  std::shared_ptr<ui::ImmediateTexture>* cached_tex = nullptr;
+  const char* asset_file = nullptr;
+  switch (button) {
+    case 'A':
+      cached_tex = &button_a_tex_;
+      asset_file = "A.png";
+      break;
+    case 'B':
+      cached_tex = &button_b_tex_;
+      asset_file = "B.png";
+      break;
+    case 'X':
+      cached_tex = &button_x_tex_;
+      asset_file = "X.png";
+      break;
+    case 'Y':
+      cached_tex = &button_y_tex_;
+      asset_file = "Y.png";
+      break;
+    default: return nullptr;
+  }
+
+  if (*cached_tex != nullptr) {
+    return *cached_tex;
+  }
+
+  if (emulator_window_.immediate_drawer_ == nullptr) {
+    return nullptr;
+  }
+
+  const std::string path = std::string("Assets/") + asset_file;
+  if (!std::filesystem::exists(path)) {
+    return nullptr;
+  }
+
+  int width = 0, height = 0, comp = 0;
+  auto data = stbi_load(path.c_str(), &width, &height, &comp, 4);
+  if (!data || width <= 0 || height <= 0) {
+    stbi_image_free(data);
+    return nullptr;
+  }
+
+  auto tex = emulator_window_.immediate_drawer_->CreateTexture(
+      static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+      xe::ui::ImmediateTextureFilter::kLinear, false, data);
+  stbi_image_free(data);
+  *cached_tex = std::move(tex);
+
+  return *cached_tex;
+}
+#endif  // XE_PLATFORM_WINRT
+
+void EmulatorWindow::ClearDialogs() {
+  if (profile_config_dialog_) {
+    profile_config_dialog_.reset();
+  }
+
+  if (display_config_dialog_) {
+    display_config_dialog_.reset();
+  }
+
+  if (console_settings_dialog_) {
+    console_settings_dialog_.reset();
+  }
+
+  if (content_list_dialog_) {
+    content_list_dialog_.reset();
+  }
+
+  if (xmp_config_dialog_) {
+    xmp_config_dialog_.reset();
+  }
+
+  imgui_drawer_.get()->ClearDialogs();
+  emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
+}
+
+}  // namespace app
+}  // namespace xe
