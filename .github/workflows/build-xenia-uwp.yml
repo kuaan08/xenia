@@ -13,8 +13,8 @@ permissions:
   contents: read
 jobs:
   uwp-x64:
-    runs-on: windows-2025
-    timeout-minutes: 120
+    runs-on: windows-2022
+    timeout-minutes: 180
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,24 +38,53 @@ jobs:
               "$($sdk.FullName)\Bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
             }
           }
+      - name: Create temporary sideload signing certificate
+        shell: pwsh
+        run: |
+          # Publisher must match Package.appxmanifest (CN=DanP142).
+          $cert = New-SelfSignedCertificate -Type Custom -Subject "CN=DanP142" -KeyUsage DigitalSignature -FriendlyName "Xenia Canary UWP CI test certificate" -CertStoreLocation "Cert:\\CurrentUser\\My" -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3")
+          $pw = ConvertTo-SecureString "xenia-ci-build" -Force -AsPlainText
+          Export-PfxCertificate -Cert $cert -FilePath "$env:GITHUB_WORKSPACE\\xenia-ci.pfx" -Password $pw | Out-Null
+          Export-Certificate -Cert $cert -FilePath "$env:GITHUB_WORKSPACE\\xenia-ci.cer" | Out-Null
       - name: Configure Visual Studio CMake
         shell: pwsh
         run: |
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+          $vs = & "${env:ProgramFiles(x86)}\\Microsoft Visual Studio\\Installer\\vswhere.exe" -latest -products '*' -property installationPath
+          if (-not $vs) { throw 'Visual Studio installation was not found' }
+          Write-Host "Using Visual Studio: $vs"
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 2>&1 | Tee-Object -FilePath configure-uwp.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Build UWP Release (unsigned diagnostic package)
+      - name: Build UWP Release and signed sideload package
         shell: pwsh
         run: |
-          cmake --build build --config Release --target xenia-canary-uwp --parallel 4 -- /p:AppxPackageSigningEnabled=false
+          cmake --build build --config Release --target xenia-canary-uwp --parallel 2 -- /p:GenerateAppxPackageOnBuild=true /p:AppxBundle=Never /p:UapAppxPackageBuildMode=SideloadOnly /p:AppxPackageSigningEnabled=true /p:PackageCertificateKeyFile="$env:GITHUB_WORKSPACE\\xenia-ci.pfx" /p:PackageCertificatePassword="xenia-ci-build" /p:AppxPackageDir="$env:GITHUB_WORKSPACE\\AppPackages\\" 2>&1 | Tee-Object -FilePath build-uwp.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Upload UWP package if generated
+      - name: Package Xbox installer with signing certificate
+        shell: pwsh
+        run: |
+          $src = "$env:GITHUB_WORKSPACE\\AppPackages"
+          if (-not (Test-Path $src)) { throw "No AppPackages folder found. Build may not have packaged UWP." }
+          $pkgs = @(Get-ChildItem $src -Recurse -File | Where-Object { $_.Extension -in @('.appx','.msix','.appxbundle','.msixbundle') })
+          if ($pkgs.Count -eq 0) { throw "No installable UWP package was generated" }
+          New-Item -ItemType Directory -Path install-xbox -Force | Out-Null
+          Copy-Item -Path "$src\\*" -Destination install-xbox -Recurse -Force
+          Copy-Item -Path xenia-ci.cer -Destination install-xbox
+          Compress-Archive -Path install-xbox/* -DestinationPath xenia-canary-uwp-xbox-x64.zip -Force
+          if ((Get-Item xenia-canary-uwp-xbox-x64.zip).Length -lt 1048576) { throw "Installer artifact unexpectedly small" }
+      - name: Upload full Xbox UWP installer
         uses: actions/upload-artifact@v4
         with:
-          name: xenia-canary-uwp-unsigned-x64
+          name: xenia-canary-uwp-xbox-x64
+          path: xenia-canary-uwp-xbox-x64.zip
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xenia-canary-uwp-ci-logs
           path: |
-            xenia-canary-uwp/AppPackages/**/*.appx
-            xenia-canary-uwp/AppPackages/**/*.appxbundle
-            xenia-canary-uwp/AppPackages/**/*.msix
-            xenia-canary-uwp/AppPackages/**/*.msixbundle
-          if-no-files-found: warn
-          retention-days: 7
+            configure-uwp.log
+            build-uwp.log
+          if-no-files-found: ignore
+          retention-days: 14
