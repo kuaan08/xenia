@@ -53,6 +53,8 @@ class IConfigVar : virtual public ICommandVar {
   virtual std::string config_value() const = 0;
   virtual void LoadConfigValue(const toml::node* result) = 0;
   virtual void LoadGameConfigValue(const toml::node* result) = 0;
+  // Clear stale overrides when the current title changes or has no config.
+  virtual void ClearGameConfigValue() = 0;
   virtual void ResetConfigValueToDefault() = 0;
 };
 
@@ -94,6 +96,7 @@ class ConfigVar : public CommandVar<T>, virtual public IConfigVar {
   void LoadGameConfigValue(const toml::node* result) override;
   void SetConfigValue(T val);
   void SetGameConfigValue(T val);
+  void ClearGameConfigValue() override;
   // Changes the actual value used to the one specified, and also makes it the
   // one that will be stored when the global config is written next time. After
   // overriding, however, the next game config loaded may still change it.
@@ -297,6 +300,13 @@ template <class T>
 void ConfigVar<T>::SetGameConfigValue(T val) {
   game_config_value_ = std::make_unique<T>(val);
   UpdateValue();
+}
+template <class T>
+void ConfigVar<T>::ClearGameConfigValue() {
+  if (game_config_value_) {
+    game_config_value_.reset();
+    UpdateValue();
+  }
 }
 template <class T>
 void ConfigVar<T>::OverrideConfigValue(T val) {
