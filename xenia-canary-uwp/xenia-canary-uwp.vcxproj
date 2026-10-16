@@ -120,7 +120,7 @@
            output into one flat dir per configuration regardless of source
            layout; add_dependencies() in ../xenia-canary-uwp/CMakeLists.txt
            orders these to build first. -->
-      <AdditionalLibraryDirectories>..\build\obj\Windows\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(MSBuildProjectDirectory)\..\build\obj\Windows\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>xenia-apu.lib;xenia-apu-nop.lib;xenia-apu-xaudio2.lib;xenia-base.lib;xenia-core.lib;xenia-cpu.lib;xenia-cpu-backend-x64.lib;xenia-debug-ui.lib;xenia-gpu.lib;xenia-gpu-d3d12.lib;xenia-gpu-null.lib;xenia-hid.lib;xenia-hid-nop.lib;xenia-hid-portal.lib;xenia-hid-xinput.lib;xenia-kernel.lib;xenia-patcher.lib;xenia-ui.lib;xenia-ui-d3d12.lib;xenia-vfs.lib;aes_128.lib;capstone.lib;discord-rpc.lib;dxbc.lib;fmt.lib;glslang-spirv.lib;imgui.lib;libavcodec.lib;libavformat.lib;libavutil.lib;libusb.lib;mspack.lib;pugixml.lib;snappy.lib;xxhash.lib;zarchive.lib;zlib-ng.lib;zstd.lib;dwmapi.lib;dxgi.lib;dxguid.lib;shlwapi.lib;winmm.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
