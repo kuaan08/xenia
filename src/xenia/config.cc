@@ -269,10 +269,15 @@ void SaveConfig() {
 
   auto handle = xe::filesystem::OpenFile(config_path, "wb");
   if (!handle) {
-    XELOGE("Failed to open '{}' for writing.", config_path);
-  } else {
-    fwrite(sb.buffer(), 1, sb.length(), handle);
-    fclose(handle);
+    XELOGE("Failed to open '{}' for writing; settings will not persist.",
+           config_path);
+    return;
+  }
+  const size_t bytes_written = fwrite(sb.buffer(), 1, sb.length(), handle);
+  const int close_result = fclose(handle);
+  if (bytes_written != sb.length() || close_result != 0) {
+    XELOGE("Failed to finish saving settings to '{}' ({} of {} bytes, close {}).",
+           config_path, bytes_written, sb.length(), close_result);
   }
 }
 
