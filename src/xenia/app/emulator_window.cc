@@ -8862,24 +8862,36 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           if (draw_text_button("##add_path_button", "Add Path")) {
             imgui_drawer()->SetIgnoreInput(true);
             UWP::SelectFolder([this](std::string path) {
-              if (path != "") {
-                if (!UWP::TestPathPermissions(path)) {
+              if (!path.empty()) {
+                // Browsing games requires read access only. Keep the
+                // write-permission check for config/cache destinations.
+                if (!UWP::TestGamePathPermissions(path)) {
                   show_path_warning_ = true;
                 } else {
                   auto paths = UWP::GetPaths();
-                  paths.push_back(path);
-                  UWP::SetGamePaths(paths);
+                  if (std::find(paths.begin(), paths.end(), path) ==
+                      paths.end()) {
+                    paths.push_back(path);
+                    UWP::SetGamePaths(paths);
+                  } else {
+                    UWP::RefreshPaths();
+                  }
                 }
               }
 
               imgui_drawer()->SetIgnoreInput(false);
-              // Reset focus to allow navigation after folder selection
               paths_focus_requested = true;
             });
           }
           if (ImGui::IsItemFocused()) {
             paths_focus_requested = false;
           }
+          ImGui::SameLine();
+          if (draw_text_button("##rescan_games_button", "Rescan Games")) {
+            UWP::RefreshPaths();
+            gamelist_focus_requested = true;
+          }
+          ImGui::TextDisabled("Games found: %zu", UWP::GetGames().size());
 
           auto ccache_root =
               dynamic_cast<cvar::ConfigVar<std::filesystem::path>*>(
