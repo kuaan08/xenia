@@ -3646,8 +3646,21 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           return false;
         }
 
-        config::LoadGameConfig(title_id);
-        emulator_window_.ApplyDisplayConfigForCvars();
+        // Do not apply a different game's preset to whichever title is
+        // currently running (or to the frontend). CompleteLaunch will load
+        // the chosen title's config automatically after its XEX is mounted.
+        auto* emulator = emulator_window_.emulator();
+        const bool same_title_running =
+            emulator && emulator->is_title_open() &&
+            fmt::format("{:08X}", emulator->title_id()) == title_id;
+        if (same_title_running) {
+          config::LoadGameConfig(title_id);
+          emulator_window_.ApplyDisplayConfigForCvars();
+          XELOGI("UWP: reapplied per-game settings for running title {}", title_id);
+        } else {
+          XELOGI("UWP: saved per-game settings for {}, pending next launch",
+                 title_id);
+        }
         return true;
       };
 
@@ -3698,7 +3711,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                     if (msg == "already_installed") {
                       action_status_ = applied
                                            ? fmt::format(
-                                                 "Optimized settings already installed and re-applied for {}.",
+                                                 "Optimized settings available for {}. Launch the game to use them.",
                                                  title_id)
                                            : fmt::format(
                                                  "Optimized settings already installed for {}, but apply failed.",
@@ -3706,7 +3719,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                     } else {
                       action_status_ = applied
                                            ? fmt::format(
-                                                 "Downloaded optimized settings and applied config for {}.",
+                                                 "Downloaded optimized settings for {}. Launch the game to use them.",
                                                  title_id)
                                            : fmt::format(
                                                  "Downloaded optimized settings for {}, but apply failed.",
@@ -5198,7 +5211,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                       break;
                     case ManualInstallKind::kConfig:
                       action_status_ = config_applied
-                                           ? "Optimized settings installed and applied manually."
+                                           ? "Optimized settings installed. Launch the game to apply them."
                                            : "Optimized settings copied manually, but apply failed.";
                       break;
                     default:
@@ -5604,7 +5617,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                         break;
                       case ManualInstallKind::kConfig:
                         action_status_ = config_applied
-                                             ? "Optimized settings installed and applied manually."
+                                             ? "Optimized settings installed. Launch the game to apply them."
                                              : "Optimized settings copied manually, but apply failed.";
                         break;
                       default:
@@ -6608,7 +6621,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                 if (apply_per_game_config(pending_per_game_config_title_id_,
                                           pending_per_game_config_path_)) {
                   action_status_ = fmt::format(
-                      "Per-game config saved and applied for {}.",
+                      "Per-game config saved for {}. Launch the game to use it.",
                       pending_per_game_config_title_id_);
                 } else {
                   action_status_ =
