@@ -151,6 +151,9 @@ DEFINE_string(ui_interface_overlay_image, "blades.png",
               "UI");
 DEFINE_bool(ui_enable_interface_overlay, true,
             "Draw the Xbox 360 Blades interface overlay on every theme.", "UI");
+DEFINE_string(ui_custom_interface_overlay_path, "",
+              "Optional custom PNG overlay selected from Xbox storage. Overrides "
+              "ui_interface_overlay_image on all themes.", "UI");
 DEFINE_double(ui_interface_overlay_opacity, 1.0,
               "Opacity of the Xbox 360 interface overlay, from 0.0 to 1.0.",
               "UI");
@@ -449,6 +452,10 @@ const char* FrontendText(const char* english) {
       {"Interface Overlay", "Overlay da interface"},
       {"Guide Panel Image", "Imagem do painel Guide"},
       {"Background Image", "Imagem de fundo"},
+      {"Custom Overlay: %s", "Overlay personalizado: %s"},
+      {"Browse for Custom Overlay...", "Procurar overlay personalizado..."},
+      {"Change Custom Overlay...", "Alterar overlay personalizado..."},
+      {"Clear Custom Overlay", "Limpar overlay personalizado"},
       {"Custom background: %s", "Fundo personalizado: %s"},
       {"Browse for Custom Background...", "Escolher fundo personalizado..."},
       {"Change Custom Background...", "Alterar fundo personalizado..."},
@@ -8459,6 +8466,50 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             }
           }
 
+          // Optional custom PNG on disk/USB, common to all themes.
+          auto* custom_overlay = FindConfigVar<std::string>(
+              "ui_custom_interface_overlay_path");
+          const std::string custom_overlay_path = custom_overlay
+              ? *custom_overlay->current_value() : "";
+          if (!custom_overlay_path.empty()) {
+            ImGui::TextWrapped(FrontendText("Custom Overlay: %s"),
+                               std::filesystem::path(custom_overlay_path)
+                                   .filename().string().c_str());
+          }
+          if (custom_overlay && ImGui::Button(FrontendText(
+                  custom_overlay_path.empty()
+                      ? "Browse for Custom Overlay..."
+                      : "Change Custom Overlay..."))) {
+            imgui_drawer()->SetIgnoreInput(true);
+            UWP::SelectFile([this, custom_overlay](std::string file_path) {
+              imgui_drawer()->SetIgnoreInput(false);
+              if (file_path.empty()) return;
+              std::string ext =
+                  std::filesystem::path(file_path).extension().string();
+              std::transform(ext.begin(), ext.end(), ext.begin(),
+                             [](unsigned char c) {
+                               return static_cast<char>(std::tolower(c));
+                             });
+              if (ext != ".png") {
+                xe::ui::ImGuiDialog::ShowMessageBox(
+                    imgui_drawer(), "Unsupported Overlay",
+                    "Please select a PNG image for the interface overlay.");
+                return;
+              }
+              custom_overlay->OverrideConfigValue(file_path);
+              config::SaveConfig();
+              background_tex_.reset();
+            });
+          }
+          if (custom_overlay && !custom_overlay_path.empty()) {
+            ImGui::SameLine();
+            if (ImGui::Button(FrontendText("Clear Custom Overlay"))) {
+              custom_overlay->OverrideConfigValue(std::string());
+              config::SaveConfig();
+              background_tex_.reset();
+            }
+          }
+
           // Interface overlay selection
           auto c_overlay = dynamic_cast<cvar::ConfigVar<std::string>*>(
               cvar::ConfigVars->find("ui_interface_overlay_image")->second);
@@ -9776,6 +9827,19 @@ std::shared_ptr<ui::ImmediateTexture>
 EmulatorWindow::WinRTFrontendDialog::GetOrCreateBackground() {
   if (background_tex_ != nullptr) {
     return background_tex_;
+  }
+
+  // A custom overlay selected from storage takes priority for every theme.
+  // Missing/revoked paths gracefully fall back to the bundled Blades PNG.
+  if (const auto* custom =
+          FindConfigVar<std::string>("ui_custom_interface_overlay_path")) {
+    const std::string path = *custom->current_value();
+    if (!path.empty()) {
+      if (auto texture = GetOrCreateImageTexture(path)) {
+        background_tex_ = texture;
+        return background_tex_;
+      }
+    }
   }
 
   std::string path;
