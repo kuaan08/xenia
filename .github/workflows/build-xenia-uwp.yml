@@ -47,6 +47,9 @@ jobs:
           $pw = ConvertTo-SecureString "xenia-ci-build" -Force -AsPlainText
           Export-PfxCertificate -Cert $cert -FilePath "$env:GITHUB_WORKSPACE\\xenia-ci.pfx" -Password $pw | Out-Null
           Export-Certificate -Cert $cert -FilePath "$env:GITHUB_WORKSPACE\\xenia-ci.cer" | Out-Null
+          if ($cert.Subject -ne 'CN=DanP142') { throw "CI signing publisher must match the UWP manifest" }
+          $thumbprint = $cert.Thumbprint.Replace(' ', '').ToUpperInvariant()
+          if ($thumbprint -notmatch '^[A-F0-9]{40}
       - name: Configure Visual Studio CMake
         shell: pwsh
         run: |
@@ -95,7 +98,90 @@ jobs:
           $vs = & $vswhere -latest -products '*' -property installationPath
           $msbuild = Join-Path $vs 'MSBuild/Current/Bin/MSBuild.exe'
           if (-not (Test-Path $msbuild)) { throw "MSBuild missing: $msbuild" }
-          & $msbuild 'xenia-canary-uwp/xenia-canary-uwp.vcxproj' /restore /m:2 /p:Configuration=Release /p:Platform=x64 /p:GenerateAppxPackageOnBuild=true /p:AppxBundle=Never /p:UapAppxPackageBuildMode=SideloadOnly /p:AppxPackageSigningEnabled=true /p:PackageCertificateKeyFile="$env:GITHUB_WORKSPACE\\xenia-ci.pfx" /p:PackageCertificatePassword="xenia-ci-build" /p:AppxPackageDir="$env:GITHUB_WORKSPACE\\AppPackages\\" 2>&1 | Tee-Object -FilePath build-uwp.log
+          & $msbuild 'xenia-canary-uwp/xenia-canary-uwp.vcxproj' /restore /m:2 /p:Configuration=Release /p:Platform=x64 /p:GenerateAppxPackageOnBuild=true /p:AppxBundle=Never /p:UapAppxPackageBuildMode=SideloadOnly /p:AppxPackageSigningEnabled=true /p:PackageCertificateKeyFile="$env:GITHUB_WORKSPACE\\xenia-ci.pfx" /p:PackageCertificatePassword="xenia-ci-build" /p:PackageCertificateThumbprint="$env:XENIA_CI_CERT_THUMBPRINT" /p:AppxPackageDir="$env:GITHUB_WORKSPACE\\AppPackages\\" 2>&1 | Tee-Object -FilePath build-uwp.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package Xbox installer with signing certificate
+        shell: pwsh
+        run: |
+          $src = "$env:GITHUB_WORKSPACE\\AppPackages"
+          if (-not (Test-Path $src)) { throw "No AppPackages folder found. Build may not have packaged UWP." }
+          $pkgs = @(Get-ChildItem $src -Recurse -File | Where-Object { $_.Extension -in @('.appx','.msix','.appxbundle','.msixbundle') })
+          if ($pkgs.Count -eq 0) { throw "No installable UWP package was generated" }
+          New-Item -ItemType Directory -Path install-xbox -Force | Out-Null
+          Copy-Item -Path "$src\\*" -Destination install-xbox -Recurse -Force
+          Copy-Item -Path xenia-ci.cer -Destination install-xbox
+          Compress-Archive -Path install-xbox/* -DestinationPath xenia-canary-uwp-xbox-x64.zip -Force
+          if ((Get-Item xenia-canary-uwp-xbox-x64.zip).Length -lt 1048576) { throw "Installer artifact unexpectedly small" }
+      - name: Upload full Xbox UWP installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: xenia-canary-uwp-xbox-x64
+          path: xenia-canary-uwp-xbox-x64.zip
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xenia-canary-uwp-ci-logs
+          path: |
+            configure-uwp.log
+            build-core.log
+            build-uwp.log
+          if-no-files-found: ignore
+          retention-days: 14
+) { throw "Invalid generated certificate thumbprint" }
+          "XENIA_CI_CERT_THUMBPRINT=$thumbprint" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Signing certificate generated; thumbprint captured for MSBuild."
+      - name: Configure Visual Studio CMake
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\\Microsoft Visual Studio\\Installer\\vswhere.exe" -latest -products '*' -property installationPath
+          if (-not $vs) { throw 'Visual Studio installation was not found' }
+          Write-Host "Using Visual Studio: $vs"
+          # All static libraries and the separate UWP project must include
+          # C++/WinRT from the exact same Windows SDK. Mismatching 26100 and
+          # 22621 results in LNK2038 / LNK1319.
+          $sdk = '10.0.26100.0'
+          $sdkHeaders = "${env:ProgramFiles(x86)}\\Windows Kits\\10\\Include\\$sdk\\cppwinrt\\winrt\\base.h"
+          if (-not (Test-Path $sdkHeaders)) { throw "Windows SDK C++/WinRT headers missing: $sdkHeaders" }
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 "-DCMAKE_SYSTEM_VERSION=$sdk" 2>&1 | Tee-Object -FilePath configure-uwp.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # include_external_msproject() does not reliably build its CMake
+      # add_dependencies in Visual Studio generators when called as a target.
+      # Produce all archives explicitly before linking the UWP app.
+      - name: Build Xenia core and third-party static libraries
+        shell: pwsh
+        run: |
+          $targets = @(
+            'xenia-apu','xenia-apu-nop','xenia-apu-xaudio2',
+            'xenia-base','xenia-core','xenia-cpu','xenia-cpu-backend-x64',
+            'xenia-debug-ui','xenia-gpu','xenia-gpu-d3d12','xenia-gpu-null',
+            'xenia-hid','xenia-hid-nop','xenia-hid-portal','xenia-hid-xinput',
+            'xenia-kernel','xenia-patcher','xenia-ui','xenia-ui-d3d12','xenia-vfs',
+            'aes_128','capstone','discord-rpc','dxbc','fmt','glslang-spirv',
+            'imgui','libavcodec','libavformat','libavutil','libusb','mspack',
+            'pugixml','snappy','xxhash','zarchive','zlib-ng','zstd'
+          )
+          cmake --build build --config Release --parallel 2 --target $targets 2>&1 | Tee-Object -FilePath build-core.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $libs = Join-Path $env:GITHUB_WORKSPACE 'build/obj/Windows/Release'
+          foreach ($name in @('xenia-apu.lib','xenia-kernel.lib','xenia-base.lib','xenia-gpu-d3d12.lib')) {
+            $candidate = Join-Path $libs $name
+            if (-not (Test-Path $candidate)) { throw "Required archive missing: $candidate" }
+            Write-Host "Verified archive: $candidate"
+          }
+      - name: Build UWP Release and signed sideload package
+        shell: pwsh
+        run: |
+          # Compile the hand-maintained UWP vcxproj only after CMake produced
+          # all static archives. Calling the external CMake target alone has
+          # been observed to skip those dependencies (LNK1181 xenia-apu.lib).
+          $vswhere = "${env:ProgramFiles(x86)}\\Microsoft Visual Studio\\Installer\\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -property installationPath
+          $msbuild = Join-Path $vs 'MSBuild/Current/Bin/MSBuild.exe'
+          if (-not (Test-Path $msbuild)) { throw "MSBuild missing: $msbuild" }
+          & $msbuild 'xenia-canary-uwp/xenia-canary-uwp.vcxproj' /restore /m:2 /p:Configuration=Release /p:Platform=x64 /p:GenerateAppxPackageOnBuild=true /p:AppxBundle=Never /p:UapAppxPackageBuildMode=SideloadOnly /p:AppxPackageSigningEnabled=true /p:PackageCertificateKeyFile="$env:GITHUB_WORKSPACE\\xenia-ci.pfx" /p:PackageCertificatePassword="xenia-ci-build" /p:PackageCertificateThumbprint="$env:XENIA_CI_CERT_THUMBPRINT" /p:AppxPackageDir="$env:GITHUB_WORKSPACE\\AppPackages\\" 2>&1 | Tee-Object -FilePath build-uwp.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Package Xbox installer with signing certificate
         shell: pwsh
