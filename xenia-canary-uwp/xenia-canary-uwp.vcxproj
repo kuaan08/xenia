@@ -93,7 +93,9 @@
     <HoursBetweenUpdateChecks>0</HoursBetweenUpdateChecks>
     <PackageCertificateKeyFile>XeniaDevCert.pfx</PackageCertificateKeyFile>
     <PackageCertificatePassword>xenia123</PackageCertificatePassword>
-    <PackageCertificateThumbprint>555FEE1247DB52910E257DA29D5DFEA74353EFCA</PackageCertificateThumbprint>
+    <!-- The certificate thumbprint must be derived from the selected PFX.
+         The CI creates a different certificate on each run and passes its
+         thumbprint through MSBuild; do not pin the old developer's hash. -->
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <TargetName>xeniacanary</TargetName>
