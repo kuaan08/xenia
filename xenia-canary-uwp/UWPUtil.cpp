@@ -190,6 +190,26 @@ bool TestPathPermissions(std::string path) {
   return success;
 }
 
+bool TestGamePathPermissions(std::string path) {
+  // Unlike config/cache directories, installed games may be on read-only
+  // volumes. Do not create a test file just to add a game search path.
+  const std::filesystem::path directory = xe::to_path(path);
+  std::error_code ec;
+  if (!std::filesystem::is_directory(directory, ec)) {
+    XELOGW("UWP GameScan: cannot read game folder '{}': {}", path,
+           ec ? ec.message() : "not a directory");
+    return false;
+  }
+  std::filesystem::directory_iterator probe(
+      directory, std::filesystem::directory_options::skip_permission_denied,
+      ec);
+  if (ec) {
+    XELOGW("UWP GameScan: cannot enumerate '{}': {}", path, ec.message());
+    return false;
+  }
+  return true;
+}
+
 std::string GetLocalCache() {
   return winrt::to_string(winrt::Windows::Storage::ApplicationData::Current()
                               .LocalCacheFolder()
