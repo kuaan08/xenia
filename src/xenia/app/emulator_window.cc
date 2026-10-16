@@ -6943,7 +6943,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                   fmt::format("{}##apply_patches", FrontendText("Apply Patches")).c_str(),
                   c_apply_patches->current_value())) {
             c_apply_patches->OverrideConfigValue(
-                !c_apply_patches->GetTypedConfigValue());
+                !(*c_apply_patches->current_value()));
             config::SaveConfig();
           }
 
@@ -6957,7 +6957,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                   fmt::format("{}##controller_hotkeys", FrontendText("Controller Hotkeys")).c_str(),
                   c_controller_hotkeys->current_value())) {
             c_controller_hotkeys->OverrideConfigValue(
-                !c_controller_hotkeys->GetTypedConfigValue());
+                !(*c_controller_hotkeys->current_value()));
             config::SaveConfig();
           }
 
@@ -6967,7 +6967,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c_user_language = dynamic_cast<cvar::ConfigVar<int32_t>*>(
               cvar::ConfigVars->find("user_language")->second);
-          int32_t user_language = c_user_language->GetTypedConfigValue();
+          int32_t user_language = (*c_user_language->current_value());
           struct LanguageOption {
             int32_t value;
             const char* label;
@@ -7029,7 +7029,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                 {"es", "Español"}, {"fr", "Français"},
                 {"de", "Deutsch"}, {"it", "Italiano"},
             };
-            const std::string active_language = c_frontend_language->GetTypedConfigValue();
+            const std::string active_language = (*c_frontend_language->current_value());
             const char* active_language_name = "English";
             for (const auto& choice : language_options) {
               if (active_language == choice.code) active_language_name = choice.name;
@@ -7057,7 +7057,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             tooltip = "Open the profile management dialog to create, edit, or delete profiles.";
           }
 
-          if (c_controller_hotkeys->GetTypedConfigValue()) {
+          if ((*c_controller_hotkeys->current_value())) {
             ImGui::Spacing();
             ImGui::PushStyleColor(ImGuiCol_Text,
                                    ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
@@ -7089,7 +7089,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           if (ImGui::Checkbox("Allow Variable Refresh Rate/Tearing",
                               c_allow_vrr_tearing->current_value())) {
             c_allow_vrr_tearing->OverrideConfigValue(
-                !c_allow_vrr_tearing->GetTypedConfigValue());
+                !(*c_allow_vrr_tearing->current_value()));
             config::SaveConfig();
           }
 
@@ -7102,7 +7102,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           if (ImGui::Checkbox("Clear Memory Page State",
                               c_clear_memory_page->current_value())) {
             c_clear_memory_page->OverrideConfigValue(
-                !c_clear_memory_page->GetTypedConfigValue());
+                !(*c_clear_memory_page->current_value()));
             config::SaveConfig();
           }
 
@@ -7114,7 +7114,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               dynamic_cast<cvar::ConfigVar<std::string>*>(
                   cvar::ConfigVars->find("readback_resolve")->second);
           std::string c_readback_resolve_value =
-              c_readback_resolve->GetTypedConfigValue();
+              (*c_readback_resolve->current_value());
           {
             ScopedAccentComboStyle accent_combo_style;
             if (ImGui::BeginCombo("Readback Resolve",
@@ -7150,7 +7150,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           if (ImGui::Checkbox("Enable D3D12 Bindless",
                               c_d3d12_bindless->current_value())) {
             c_d3d12_bindless->OverrideConfigValue(
-                !c_d3d12_bindless->GetTypedConfigValue());
+                !(*c_d3d12_bindless->current_value()));
             config::SaveConfig();
           }
 
@@ -7166,7 +7166,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                               c_d3d12_submit_on_primary_buffer_end
                                   ->current_value())) {
             c_d3d12_submit_on_primary_buffer_end->OverrideConfigValue(
-                !c_d3d12_submit_on_primary_buffer_end->GetTypedConfigValue());
+                !(*c_d3d12_submit_on_primary_buffer_end->current_value()));
             config::SaveConfig();
           }
 
@@ -7182,7 +7182,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                   "Enable D3D12 Tiled Shared Memory (On Xbox keep\nOFF otherwise games will crash)",
                   c_d3d12_enable_tiled_shared_memory->current_value())) {
             c_d3d12_enable_tiled_shared_memory->OverrideConfigValue(
-                !c_d3d12_enable_tiled_shared_memory->GetTypedConfigValue());
+                !(*c_d3d12_enable_tiled_shared_memory->current_value()));
             config::SaveConfig();
           }
 
@@ -7196,7 +7196,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               cvar::ConfigVars->find("postprocess_scaling_and_sharpening")
                   ->second);
           std::string c_post_scaling_value =
-              c_post_scaling->GetTypedConfigValue();
+              (*c_post_scaling->current_value());
           {
             ScopedAccentComboStyle accent_combo_style;
             if (ImGui::BeginCombo("Scaling & Sharpening Effect",
@@ -7234,7 +7234,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c_post_aa = dynamic_cast<cvar::ConfigVar<std::string>*>(
               cvar::ConfigVars->find("postprocess_antialiasing")->second);
-          std::string postaa_value = c_post_aa->GetTypedConfigValue();
+          std::string postaa_value = (*c_post_aa->current_value());
           {
             ScopedAccentComboStyle accent_combo_style;
             if (ImGui::BeginCombo(
@@ -7267,7 +7267,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           auto c_cas_sharpness = dynamic_cast<cvar::ConfigVar<double>*>(
               cvar::ConfigVars->find("postprocess_ffx_cas_additional_sharpness")
                   ->second);
-          float cas_additional = (float)c_cas_sharpness->GetTypedConfigValue();
+          float cas_additional = (float)(*c_cas_sharpness->current_value());
           bool cas_additional_changed = false;
           if (ImGui::SliderFloat("CAS Additional Sharpness", &cas_additional,
                                  0.0f, 1.0f, "%.3f")) {
@@ -7293,7 +7293,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                   ->find("postprocess_ffx_fsr_max_upsampling_passes")
                   ->second);
           uint32_t fsr_max_upsampling_value =
-              c_fsr_max_upsampling->GetTypedConfigValue();
+              (*c_fsr_max_upsampling->current_value());
           char value_label[32];
           snprintf(value_label, 32, "%dx", fsr_max_upsampling_value);
           {
@@ -7333,7 +7333,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                       ->find("postprocess_ffx_fsr_sharpness_reduction")
                       ->second);
           float fsr_sharpness_reduction =
-              (float)c_fsr_sharpness_reduction->GetTypedConfigValue();
+              (float)(*c_fsr_sharpness_reduction->current_value());
           const auto fsr_label =
               fmt::format("{:.3f} stops", fsr_sharpness_reduction);
           float fsr_slider_value =
@@ -7368,7 +7368,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           if (ImGui::Checkbox("Letterbox Presentation",
                               c_present_letterbox->current_value())) {
             c_present_letterbox->OverrideConfigValue(
-                !c_present_letterbox->GetTypedConfigValue());
+                !(*c_present_letterbox->current_value()));
             config::SaveConfig();
           }
 
@@ -7378,7 +7378,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c_present_safe_area_x = dynamic_cast<cvar::ConfigVar<int32_t>*>(
               cvar::ConfigVars->find("present_safe_area_x")->second);
-          int present_safe_area_x = c_present_safe_area_x->GetTypedConfigValue();
+          int present_safe_area_x = (*c_present_safe_area_x->current_value());
           if (ImGui::SliderInt("Presentation Safe Area Width",
                                &present_safe_area_x, 1, 100, "%d%%")) {
             c_present_safe_area_x->OverrideConfigValue(present_safe_area_x);
@@ -7391,7 +7391,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c_present_safe_area_y = dynamic_cast<cvar::ConfigVar<int32_t>*>(
               cvar::ConfigVars->find("present_safe_area_y")->second);
-          int present_safe_area_y = c_present_safe_area_y->GetTypedConfigValue();
+          int present_safe_area_y = (*c_present_safe_area_y->current_value());
           if (ImGui::SliderInt("Presentation Safe Area Height",
                                &present_safe_area_y, 1, 100, "%d%%")) {
             c_present_safe_area_y->OverrideConfigValue(present_safe_area_y);
@@ -7408,7 +7408,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           if (ImGui::Checkbox("Use Presentation Render-Pass Clear",
                               c_present_render_pass_clear->current_value())) {
             c_present_render_pass_clear->OverrideConfigValue(
-                !c_present_render_pass_clear->GetTypedConfigValue());
+                !(*c_present_render_pass_clear->current_value()));
             config::SaveConfig();
           }
 
@@ -7424,7 +7424,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                               c_host_present_from_non_ui_thread
                                   ->current_value())) {
             c_host_present_from_non_ui_thread->OverrideConfigValue(
-                !c_host_present_from_non_ui_thread->GetTypedConfigValue());
+                !(*c_host_present_from_non_ui_thread->current_value()));
             config::SaveConfig();
           }
 
@@ -7436,7 +7436,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               cvar::ConfigVars->find("postprocess_dither")->second);
           if (ImGui::Checkbox("Postprocess Dither",
                               c_post_dither->current_value())) {
-            c_post_dither->OverrideConfigValue(!c_post_dither->GetTypedConfigValue());
+            c_post_dither->OverrideConfigValue(!(*c_post_dither->current_value()));
             config::SaveConfig();
           }
 
@@ -7451,7 +7451,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                            ? dynamic_cast<cvar::ConfigVar<std::string>*>(
                                  find_gpu_cvar->second)
                            : nullptr;
-          std::string gpu_value = c_gpu ? c_gpu->GetTypedConfigValue() : "";
+          std::string gpu_value = c_gpu ? (*c_gpu->current_value()) : "";
           if (!c_gpu) {
             ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
                                "GPU backend selector unavailable.");
@@ -7512,7 +7512,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                     "Disable Context Promotion",
                     c_disable_context_promotion->current_value())) {
               c_disable_context_promotion->OverrideConfigValue(
-                  !c_disable_context_promotion->GetTypedConfigValue());
+                  !(*c_disable_context_promotion->current_value()));
               config::SaveConfig();
             }
 
@@ -7533,7 +7533,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                     "Allow Invalid Upload Range",
                     c_allow_invalid_upload_range->current_value())) {
               c_allow_invalid_upload_range->OverrideConfigValue(
-                  !c_allow_invalid_upload_range->GetTypedConfigValue());
+                  !(*c_allow_invalid_upload_range->current_value()));
               config::SaveConfig();
             }
 
@@ -7553,7 +7553,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             if (ImGui::Checkbox("Allow Invalid Fetch Constants",
                                 c_allow_invalid->current_value())) {
               c_allow_invalid->OverrideConfigValue(
-                  !c_allow_invalid->GetTypedConfigValue());
+                  !(*c_allow_invalid->current_value()));
               config::SaveConfig();
             }
 
@@ -7567,7 +7567,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             if (ImGui::Checkbox("DXBC Switch",
                                 c_dxbc_switch->current_value())) {
               c_dxbc_switch->OverrideConfigValue(
-                  !c_dxbc_switch->GetTypedConfigValue());
+                  !(*c_dxbc_switch->current_value()));
               config::SaveConfig();
             }
 
@@ -7579,7 +7579,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           auto c2xmsaa = FindConfigVar<bool>("native_2x_msaa");
           if (c2xmsaa) {
             if (ImGui::Checkbox("Native 2X MSAA", c2xmsaa->current_value())) {
-              c2xmsaa->OverrideConfigValue(!c2xmsaa->GetTypedConfigValue());
+              c2xmsaa->OverrideConfigValue(!(*c2xmsaa->current_value()));
               config::SaveConfig();
             }
 
@@ -7591,7 +7591,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           auto c_vsync = FindConfigVar<bool>("vsync");
           if (c_vsync) {
             if (ImGui::Checkbox("V-Sync", c_vsync->current_value())) {
-              c_vsync->OverrideConfigValue(!c_vsync->GetTypedConfigValue());
+              c_vsync->OverrideConfigValue(!(*c_vsync->current_value()));
               config::SaveConfig();
             }
 
@@ -7603,7 +7603,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           auto c_framerate_limit = FindConfigVar<uint64_t>("framerate_limit");
           if (c_framerate_limit) {
             int framerate_limit_value =
-                static_cast<int>(c_framerate_limit->GetTypedConfigValue());
+                static_cast<int>((*c_framerate_limit->current_value()));
             if (ImGui::SliderInt("Framerate Limit", &framerate_limit_value, 0,
                                  240)) {
               c_framerate_limit->OverrideConfigValue(
@@ -7638,7 +7638,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               FindConfigVar<std::string>("render_target_path_d3d12");
           if (c_render_target_path) {
             std::string c_render_target_path_value =
-                c_render_target_path->GetTypedConfigValue();
+                (*c_render_target_path->current_value());
             {
               ScopedAccentComboStyle accent_combo_style;
               if (ImGui::BeginCombo(
@@ -7677,7 +7677,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           if (c_gamma_rt) {
             if (ImGui::Checkbox("Gamma Render Target As sRGB",
                                 c_gamma_rt->current_value())) {
-              c_gamma_rt->OverrideConfigValue(!c_gamma_rt->GetTypedConfigValue());
+              c_gamma_rt->OverrideConfigValue(!(*c_gamma_rt->current_value()));
               config::SaveConfig();
             }
 
@@ -7689,7 +7689,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           auto c_query_lower = FindConfigVar<int32_t>(
               "query_occlusion_sample_lower_threshold");
           if (c_query_lower) {
-            int query_lower = c_query_lower->GetTypedConfigValue();
+            int query_lower = (*c_query_lower->current_value());
             if (ImGui::InputInt("Query Occlusion Lower Threshold",
                                 &query_lower)) {
               c_query_lower->OverrideConfigValue(query_lower);
@@ -7704,7 +7704,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           auto c_query_upper = FindConfigVar<int32_t>(
               "query_occlusion_sample_upper_threshold");
           if (c_query_upper) {
-            int query_upper = c_query_upper->GetTypedConfigValue();
+            int query_upper = (*c_query_upper->current_value());
             if (ImGui::InputInt("Query Occlusion Upper Threshold",
                                 &query_upper)) {
               c_query_upper->OverrideConfigValue(query_upper);
@@ -7721,7 +7721,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             if (ImGui::Checkbox("Use Fuzzy Alpha Epsilon",
                                 c_fuzzy_alpha->current_value())) {
               c_fuzzy_alpha->OverrideConfigValue(
-                  !c_fuzzy_alpha->GetTypedConfigValue());
+                  !(*c_fuzzy_alpha->current_value()));
               config::SaveConfig();
             }
 
@@ -7737,7 +7737,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                     "Native Stencil Value Output",
                     c_native_stencil_value_output->current_value())) {
               c_native_stencil_value_output->OverrideConfigValue(
-                  !c_native_stencil_value_output->GetTypedConfigValue());
+                  !(*c_native_stencil_value_output->current_value()));
               config::SaveConfig();
             }
 
@@ -7753,7 +7753,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                                 c_snorm16_render_target_full_range
                                     ->current_value())) {
               c_snorm16_render_target_full_range->OverrideConfigValue(
-                  !c_snorm16_render_target_full_range->GetTypedConfigValue());
+                  !(*c_snorm16_render_target_full_range->current_value()));
               config::SaveConfig();
             }
 
@@ -7769,7 +7769,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                                 c_mrt_edram_used_range_clamp_to_min
                                     ->current_value())) {
               c_mrt_edram_used_range_clamp_to_min->OverrideConfigValue(
-                  !c_mrt_edram_used_range_clamp_to_min->GetTypedConfigValue());
+                  !(*c_mrt_edram_used_range_clamp_to_min->current_value()));
               config::SaveConfig();
             }
 
@@ -7783,7 +7783,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             if (ImGui::Checkbox("Store Shaders",
                                 c_store_shaders->current_value())) {
               c_store_shaders->OverrideConfigValue(
-                  !c_store_shaders->GetTypedConfigValue());
+                  !(*c_store_shaders->current_value()));
               config::SaveConfig();
             }
 
@@ -7798,7 +7798,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             if (ImGui::Checkbox("Preload Shader Cache",
                                 c_preload_shader_cache->current_value())) {
               c_preload_shader_cache->OverrideConfigValue(
-                  !c_preload_shader_cache->GetTypedConfigValue());
+                  !(*c_preload_shader_cache->current_value()));
               config::SaveConfig();
             }
 
@@ -7810,7 +7810,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           auto c_scale_x = FindConfigVar<int>("draw_resolution_scale_x");
           auto c_scale_y = FindConfigVar<int>("draw_resolution_scale_y");
           if (c_scale_x && c_scale_y) {
-            int scale_value = c_scale_x->GetTypedConfigValue();
+            int scale_value = (*c_scale_x->current_value());
             char scale_value_label[32];
             snprintf(scale_value_label, 32, "%dx", scale_value);
             {
@@ -7853,7 +7853,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
         if (settings_selected_section == 4) {
           auto c_apu = dynamic_cast<cvar::ConfigVar<std::string>*>(
               cvar::ConfigVars->find("apu")->second);
-          std::string apu_value = c_apu->GetTypedConfigValue();
+          std::string apu_value = (*c_apu->current_value());
           const char* apu_preview = apu_value.empty() ? "Any" : apu_value.c_str();
           {
             ScopedAccentComboStyle accent_combo_style;
@@ -7900,7 +7900,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           auto c_mute = dynamic_cast<cvar::ConfigVar<bool>*>(
               cvar::ConfigVars->find("mute")->second);
           if (ImGui::Checkbox("Mute Audio", c_mute->current_value())) {
-            c_mute->OverrideConfigValue(!c_mute->GetTypedConfigValue());
+            c_mute->OverrideConfigValue(!(*c_mute->current_value()));
             config::SaveConfig();
           }
 
@@ -7916,7 +7916,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           if (ImGui::Checkbox("Ignore Offset",
                               c_ignore_offset->current_value())) {
             c_ignore_offset->OverrideConfigValue(
-                !c_ignore_offset->GetTypedConfigValue());
+                !(*c_ignore_offset->current_value()));
             config::SaveConfig();
           }
 
@@ -7929,7 +7929,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           if (ImGui::Checkbox("Protect On Release",
                               c_protect_on_release->current_value())) {
             c_protect_on_release->OverrideConfigValue(
-                !c_protect_on_release->GetTypedConfigValue());
+                !(*c_protect_on_release->current_value()));
             config::SaveConfig();
           }
 
@@ -7942,7 +7942,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           if (ImGui::Checkbox("Protect Zero",
                               c_protect_zero->current_value())) {
             c_protect_zero->OverrideConfigValue(
-                !c_protect_zero->GetTypedConfigValue());
+                !(*c_protect_zero->current_value()));
             config::SaveConfig();
           }
 
@@ -7955,7 +7955,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           if (ImGui::Checkbox("Scribble Heap",
                               c_scribble_heap->current_value())) {
             c_scribble_heap->OverrideConfigValue(
-                !c_scribble_heap->GetTypedConfigValue());
+                !(*c_scribble_heap->current_value()));
             config::SaveConfig();
           }
 
@@ -7969,7 +7969,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               cvar::ConfigVars->find("mount_cache")->second);
           if (ImGui::Checkbox("Mount Cache", c_mount_cache->current_value())) {
             c_mount_cache->OverrideConfigValue(
-                !c_mount_cache->GetTypedConfigValue());
+                !(*c_mount_cache->current_value()));
             config::SaveConfig();
           }
 
@@ -7982,7 +7982,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           if (ImGui::Checkbox("Mount Scratch",
                               c_mount_scratch->current_value())) {
             c_mount_scratch->OverrideConfigValue(
-                !c_mount_scratch->GetTypedConfigValue());
+                !(*c_mount_scratch->current_value()));
             config::SaveConfig();
           }
 
@@ -7995,7 +7995,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           if (ImGui::Checkbox("Mount Memory Unit",
                               c_mount_memory_unit->current_value())) {
             c_mount_memory_unit->OverrideConfigValue(
-                !c_mount_memory_unit->GetTypedConfigValue());
+                !(*c_mount_memory_unit->current_value()));
             config::SaveConfig();
           }
 
@@ -8023,7 +8023,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                 {"amoled", "AMOLED Dark", "green", "none"},
                 {"minimal", "Minimal Dark", "grey", "none"},
             };
-            std::string chosen = c_theme->GetTypedConfigValue();
+            std::string chosen = (*c_theme->current_value());
             const char* preview = FrontendText("Xbox 360 Classic");
             for (const auto& choice : kThemes) {
               if (chosen == choice.id) preview = FrontendText(choice.label);
@@ -8055,7 +8055,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                                  const char* false_label,
                                  cvar::ConfigVar<bool>* cvar,
                                  const char* desc) {
-            bool current = cvar->GetTypedConfigValue();
+            bool current = (*cvar->current_value());
             const char* preview = current ? true_label : false_label;
             {
               ScopedAccentComboStyle accent_combo_style;
@@ -8183,7 +8183,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           // Interface overlay selection
           auto c_overlay = dynamic_cast<cvar::ConfigVar<std::string>*>(
               cvar::ConfigVars->find("ui_interface_overlay_image")->second);
-          std::string current_overlay = c_overlay ? c_overlay->GetTypedConfigValue() : "blades.png";
+          std::string current_overlay = c_overlay ? (*c_overlay->current_value()) : "blades.png";
           
           // Scan for available interface overlay files
           static std::vector<std::string> available_overlays;
@@ -8206,7 +8206,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             // Also scan content path if available
             auto ccontent_root = dynamic_cast<cvar::ConfigVar<std::filesystem::path>*>(
                 cvar::ConfigVars->find("content_root")->second);
-            std::string content_path = ccontent_root->GetTypedConfigValue().string();
+            std::string content_path = (*ccontent_root->current_value()).string();
             if (!content_path.empty()) {
               std::string content_overlays_dir = content_path + "/interface_overlays/";
               if (std::filesystem::exists(content_overlays_dir) && std::filesystem::is_directory(content_overlays_dir)) {
@@ -8264,7 +8264,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           // Guide image selection
           auto c_guide = dynamic_cast<cvar::ConfigVar<std::string>*>(
               cvar::ConfigVars->find("ui_guide_image")->second);
-          std::string current_guide = c_guide ? c_guide->GetTypedConfigValue() : "blades.png";
+          std::string current_guide = c_guide ? (*c_guide->current_value()) : "blades.png";
           const auto has_suffix = [](const std::string& value,
                                      const std::string& suffix) {
             return value.size() >= suffix.size() &&
@@ -8356,7 +8356,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           // Background image selection
           auto c_background = dynamic_cast<cvar::ConfigVar<std::string>*>(
               cvar::ConfigVars->find("ui_background_image")->second);
-          std::string current_background = c_background ? c_background->GetTypedConfigValue() : "default.png";
+          std::string current_background = c_background ? (*c_background->current_value()) : "default.png";
           
           // Scan for available background image files
           static std::vector<std::string> available_backgrounds;
@@ -8379,7 +8379,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             // Also scan content path if available
             auto ccontent_root = dynamic_cast<cvar::ConfigVar<std::filesystem::path>*>(
                 cvar::ConfigVars->find("content_root")->second);
-            std::string content_path = ccontent_root->GetTypedConfigValue().string();
+            std::string content_path = (*ccontent_root->current_value()).string();
             if (!content_path.empty()) {
               std::string content_backgrounds_dir = content_path + "/backgrounds/";
               if (std::filesystem::exists(content_backgrounds_dir) && std::filesystem::is_directory(content_backgrounds_dir)) {
@@ -8441,7 +8441,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           auto c_custom_background = dynamic_cast<cvar::ConfigVar<std::string>*>(
               cvar::ConfigVars->find("ui_custom_background_path")->second);
           std::string custom_background_path =
-              c_custom_background ? c_custom_background->GetTypedConfigValue()
+              c_custom_background ? (*c_custom_background->current_value())
                                   : "";
 
           if (!custom_background_path.empty()) {
@@ -8489,7 +8489,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               cvar::ConfigVars->find("ui_enable_dynamic_game_backgrounds")->second);
           if (ImGui::Checkbox("Enable Dynamic Game Backgrounds", 
                               c_dynamic_bg->current_value())) {
-            c_dynamic_bg->OverrideConfigValue(!c_dynamic_bg->GetTypedConfigValue());
+            c_dynamic_bg->OverrideConfigValue(!(*c_dynamic_bg->current_value()));
             config::SaveConfig();
           }
           if (ImGui::IsItemFocused()) {
@@ -8501,7 +8501,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               cvar::ConfigVars->find("ui_hide_tabs_text")->second);
           if (ImGui::Checkbox("Hide Tabs Text", 
                               c_hide_tabs->current_value())) {
-            c_hide_tabs->OverrideConfigValue(!c_hide_tabs->GetTypedConfigValue());
+            c_hide_tabs->OverrideConfigValue(!(*c_hide_tabs->current_value()));
             config::SaveConfig();
           }
           if (ImGui::IsItemFocused()) {
@@ -8511,7 +8511,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           auto c_border_color = dynamic_cast<cvar::ConfigVar<std::string>*>(
               cvar::ConfigVars->find("ui_border_color")->second);
           std::string current_border_color =
-              c_border_color ? c_border_color->GetTypedConfigValue() : "green";
+              c_border_color ? (*c_border_color->current_value()) : "green";
           const char* border_color_values[] = {"green",  "purple", "red",
                                                "orange", "blue",   "yellow",
                                                "grey",   "black",  "white"};
@@ -8556,7 +8556,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           // Text effect combo box
           auto c_text_effect = dynamic_cast<cvar::ConfigVar<std::string>*>(
               cvar::ConfigVars->find("ui_text_effect")->second);
-          std::string current_effect = c_text_effect ? c_text_effect->GetTypedConfigValue() : "none";
+          std::string current_effect = c_text_effect ? (*c_text_effect->current_value()) : "none";
           
           const char* text_effects[] = {"shadow", "lift", "stroke_fill", "glow",
                                         "outline", "double_shadow", "bold",
@@ -8597,7 +8597,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           auto c_text_color = dynamic_cast<cvar::ConfigVar<std::string>*>(
               cvar::ConfigVars->find("ui_text_color")->second);
           std::string current_text_color =
-              c_text_color ? c_text_color->GetTypedConfigValue() : "white";
+              c_text_color ? (*c_text_color->current_value()) : "white";
           const char* text_colors[] = {"white", "black"};
           int current_text_color_index = current_text_color == "black" ? 1 : 0;
           {
@@ -8625,7 +8625,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               cvar::ConfigVars->find("ui_text_brightness")->second);
           float text_brightness = c_text_brightness
                                       ? static_cast<float>(
-                                            c_text_brightness->GetTypedConfigValue())
+                                            (*c_text_brightness->current_value()))
                                       : 1.0f;
           if (ImGui::SliderFloat("Text Brightness", &text_brightness, 0.25f,
                                  2.0f, "%.2f")) {
@@ -8640,7 +8640,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               cvar::ConfigVars->find("ui_text_contrast")->second);
           float text_contrast = c_text_contrast
                                     ? static_cast<float>(
-                                          c_text_contrast->GetTypedConfigValue())
+                                          (*c_text_contrast->current_value()))
                                     : 1.0f;
           if (ImGui::SliderFloat("Text Contrast", &text_contrast, 0.25f, 2.0f,
                                  "%.2f")) {
@@ -8659,7 +8659,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           if (ImGui::Checkbox("Enable Host Guest Stack Synchronization",
                               c_host_guest_stacksync->current_value())) {
             c_host_guest_stacksync->OverrideConfigValue(
-                !c_host_guest_stacksync->GetTypedConfigValue());
+                !(*c_host_guest_stacksync->current_value()));
             config::SaveConfig();
           }
 
@@ -8714,8 +8714,8 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                 {"1920x1080", 1920, 1080},
             };
 
-            uint32_t current_x = c_internal_resolution_x->GetTypedConfigValue();
-            uint32_t current_y = c_internal_resolution_y->GetTypedConfigValue();
+            uint32_t current_x = (*c_internal_resolution_x->current_value());
+            uint32_t current_y = (*c_internal_resolution_y->current_value());
             const char* resolution_preview =
                 (current_x == 0 && current_y == 0) ? "Default (guest setting)"
                                                     : "Custom";
@@ -8787,7 +8787,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           if (c_widescreen) {
             if (ImGui::Checkbox("Widescreen",
                                 c_widescreen->current_value())) {
-              c_widescreen->OverrideConfigValue(!c_widescreen->GetTypedConfigValue());
+              c_widescreen->OverrideConfigValue(!(*c_widescreen->current_value()));
               config::SaveConfig();
             }
 
@@ -8801,7 +8801,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             if (ImGui::Checkbox("Use 50Hz Video Mode",
                                 c_use_50hz_mode->current_value())) {
               c_use_50hz_mode->OverrideConfigValue(
-                  !c_use_50hz_mode->GetTypedConfigValue());
+                  !(*c_use_50hz_mode->current_value()));
               config::SaveConfig();
             }
 
@@ -8814,7 +8814,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           if (c_interlaced) {
             if (ImGui::Checkbox("Interlaced Video Mode",
                                 c_interlaced->current_value())) {
-              c_interlaced->OverrideConfigValue(!c_interlaced->GetTypedConfigValue());
+              c_interlaced->OverrideConfigValue(!(*c_interlaced->current_value()));
               config::SaveConfig();
             }
 
@@ -8840,7 +8840,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               cvar::ConfigVars->find("vibration")->second);
 
           float left_deadzone =
-              static_cast<float>(c_left_deadzone->GetTypedConfigValue());
+              static_cast<float>((*c_left_deadzone->current_value()));
           if (ImGui::SliderFloat("Left Stick Deadzone", &left_deadzone, 0.0f,
                                  1.0f, "%.2f")) {
             c_left_deadzone->OverrideConfigValue(static_cast<double>(left_deadzone));
@@ -8852,7 +8852,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           }
 
           float right_deadzone =
-              static_cast<float>(c_right_deadzone->GetTypedConfigValue());
+              static_cast<float>((*c_right_deadzone->current_value()));
           if (ImGui::SliderFloat("Right Stick Deadzone", &right_deadzone, 0.0f,
                                  1.0f, "%.2f")) {
             c_right_deadzone->OverrideConfigValue(
@@ -8865,7 +8865,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           }
 
           float left_trigger_deadzone =
-              static_cast<float>(c_left_trigger_deadzone->GetTypedConfigValue());
+              static_cast<float>((*c_left_trigger_deadzone->current_value()));
           if (ImGui::SliderFloat("Left Trigger Deadzone", &left_trigger_deadzone,
                                  0.0f, 1.0f, "%.2f")) {
             c_left_trigger_deadzone->OverrideConfigValue(
@@ -8878,7 +8878,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           }
 
           float right_trigger_deadzone =
-              static_cast<float>(c_right_trigger_deadzone->GetTypedConfigValue());
+              static_cast<float>((*c_right_trigger_deadzone->current_value()));
           if (ImGui::SliderFloat("Right Trigger Deadzone",
                                  &right_trigger_deadzone, 0.0f, 1.0f,
                                  "%.2f")) {
@@ -8893,7 +8893,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           if (ImGui::Checkbox("Controller Vibration",
                               c_vibration->current_value())) {
-            c_vibration->OverrideConfigValue(!c_vibration->GetTypedConfigValue());
+            c_vibration->OverrideConfigValue(!(*c_vibration->current_value()));
             config::SaveConfig();
           }
 
@@ -8906,7 +8906,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           if (ImGui::Checkbox("Forward Guide Button",
                               c_guide_button->current_value())) {
             c_guide_button->OverrideConfigValue(
-                !c_guide_button->GetTypedConfigValue());
+                !(*c_guide_button->current_value()));
             config::SaveConfig();
           }
 
@@ -8918,7 +8918,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
         if (settings_selected_section == 11) {
           auto cl = dynamic_cast<cvar::ConfigVar<std::string>*>(
               cvar::ConfigVars->find("cl")->second);
-          std::string cl_text = (std::string)cl->GetTypedConfigValue();
+          std::string cl_text = (std::string)(*cl->current_value());
           if (cl_text != cl_buffer_ && cl_buffer_[0] == '\0') {
             xe::string_util::copy_truncating(cl_buffer_, cl_text,
                                              sizeof(cl_buffer_));
@@ -8964,7 +8964,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             const std::string label =
                 fmt::format("{}##{}", FrontendText(option.label), option.key);
             if (ImGui::Checkbox(label.c_str(), value->current_value())) {
-              value->OverrideConfigValue(!value->GetTypedConfigValue());
+              value->OverrideConfigValue(!(*value->current_value()));
               config::SaveConfig();
             }
             if (ImGui::IsItemFocused()) tooltip = value->description();
