@@ -160,7 +160,10 @@ void ReadGameConfig(const std::filesystem::path& file_path) {
 
     const auto config_key_node = config.at_path(config_key);
     if (config_key_node) {
-      config_var->LoadConfigValue(config_key_node.node());
+      // Keep per-title values separate from the global user's config.
+      // Loading into LoadConfigValue used to overwrite and save global
+      // preferences as if they belonged to every game.
+      config_var->LoadGameConfigValue(config_key_node.node());
     }
   }
   XELOGI("Loaded game config: {}", file_path);
@@ -311,6 +314,13 @@ void SetupConfig(const std::filesystem::path& config_folder) {
 }
 
 void LoadGameConfig(const std::string_view title_id) {
+  // Clear previous title's overrides even when this title has no config
+  // file, so settings for game A never silently leak into game B.
+  if (cvar::ConfigVars) {
+    for (const auto& [name, config_var] : *cvar::ConfigVars) {
+      config_var->ClearGameConfigValue();
+    }
+  }
   const auto game_config_folder = config_folder / "config";
   const auto game_config_path =
       game_config_folder / (std::string(title_id) + game_config_suffix);
