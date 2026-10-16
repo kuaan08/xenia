@@ -1,0 +1,61 @@
+name: Xenia Canary UWP x64 (experimental build)
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'xenia-canary-uwp/**'
+      - 'src/xenia/app/emulator_window.cc'
+      - 'src/xenia/emulator.cc'
+      - 'CMakeLists.txt'
+      - '.github/workflows/build-xenia-uwp.yml'
+permissions:
+  contents: read
+jobs:
+  uwp-x64:
+    runs-on: windows-2025
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Fetch required submodules
+        shell: pwsh
+        run: |
+          $paths = git config -f .gitmodules --name-only --get-regexp 'submodule\..*\.path' | ForEach-Object {
+            git config -f .gitmodules --get $_
+          } | Where-Object { $_ -ne 'third_party/xbyak_aarch64' }
+          git submodule update --init --depth 1 --jobs 6 -- $paths
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install Vulkan shader tools
+        shell: pwsh
+        run: |
+          if (-not (Get-Command glslangValidator.exe -ErrorAction SilentlyContinue)) {
+            Invoke-WebRequest -Uri 'https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk.exe' -OutFile "$env:RUNNER_TEMP\vulkan-sdk.exe"
+            Start-Process "$env:RUNNER_TEMP\vulkan-sdk.exe" -ArgumentList @('--accept-licenses','--default-answer','--confirm-command','install') -NoNewWindow -Wait
+            $sdk = Get-ChildItem C:\VulkanSDK -Directory | Sort-Object Name -Descending | Select-Object -First 1
+            if ($sdk) {
+              "VULKAN_SDK=$($sdk.FullName)" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+              "$($sdk.FullName)\Bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+            }
+          }
+      - name: Configure Visual Studio CMake
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build UWP Release (unsigned diagnostic package)
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --target xenia-canary-uwp --parallel 4 -- /p:AppxPackageSigningEnabled=false
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload UWP package if generated
+        uses: actions/upload-artifact@v4
+        with:
+          name: xenia-canary-uwp-unsigned-x64
+          path: |
+            xenia-canary-uwp/AppPackages/**/*.appx
+            xenia-canary-uwp/AppPackages/**/*.appxbundle
+            xenia-canary-uwp/AppPackages/**/*.msix
+            xenia-canary-uwp/AppPackages/**/*.msixbundle
+          if-no-files-found: warn
+          retention-days: 7
