@@ -55,10 +55,41 @@ jobs:
           Write-Host "Using Visual Studio: $vs"
           cmake -S . -B build -G "Visual Studio 17 2022" -A x64 2>&1 | Tee-Object -FilePath configure-uwp.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # include_external_msproject() does not reliably build its CMake
+      # add_dependencies in Visual Studio generators when called as a target.
+      # Produce all archives explicitly before linking the UWP app.
+      - name: Build Xenia core and third-party static libraries
+        shell: pwsh
+        run: |
+          $targets = @(
+            'xenia-apu','xenia-apu-nop','xenia-apu-xaudio2',
+            'xenia-base','xenia-core','xenia-cpu','xenia-cpu-backend-x64',
+            'xenia-debug-ui','xenia-gpu','xenia-gpu-d3d12','xenia-gpu-null',
+            'xenia-hid','xenia-hid-nop','xenia-hid-portal','xenia-hid-xinput',
+            'xenia-kernel','xenia-patcher','xenia-ui','xenia-ui-d3d12','xenia-vfs',
+            'aes_128','capstone','discord-rpc','dxbc','fmt','glslang-spirv',
+            'imgui','libavcodec','libavformat','libavutil','libusb','mspack',
+            'pugixml','snappy','xxhash','zarchive','zlib-ng','zstd'
+          )
+          cmake --build build --config Release --parallel 2 --target $targets 2>&1 | Tee-Object -FilePath build-core.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $libs = Join-Path $env:GITHUB_WORKSPACE 'build/obj/Windows/Release'
+          foreach ($name in @('xenia-apu.lib','xenia-kernel.lib','xenia-base.lib','xenia-gpu-d3d12.lib')) {
+            $candidate = Join-Path $libs $name
+            if (-not (Test-Path $candidate)) { throw "Required archive missing: $candidate" }
+            Write-Host "Verified archive: $candidate"
+          }
       - name: Build UWP Release and signed sideload package
         shell: pwsh
         run: |
-          cmake --build build --config Release --target xenia-canary-uwp --parallel 2 -- /p:GenerateAppxPackageOnBuild=true /p:AppxBundle=Never /p:UapAppxPackageBuildMode=SideloadOnly /p:AppxPackageSigningEnabled=true /p:PackageCertificateKeyFile="$env:GITHUB_WORKSPACE\\xenia-ci.pfx" /p:PackageCertificatePassword="xenia-ci-build" /p:AppxPackageDir="$env:GITHUB_WORKSPACE\\AppPackages\\" 2>&1 | Tee-Object -FilePath build-uwp.log
+          # Compile the hand-maintained UWP vcxproj only after CMake produced
+          # all static archives. Calling the external CMake target alone has
+          # been observed to skip those dependencies (LNK1181 xenia-apu.lib).
+          $vswhere = "${env:ProgramFiles(x86)}\\Microsoft Visual Studio\\Installer\\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -property installationPath
+          $msbuild = Join-Path $vs 'MSBuild/Current/Bin/MSBuild.exe'
+          if (-not (Test-Path $msbuild)) { throw "MSBuild missing: $msbuild" }
+          & $msbuild 'xenia-canary-uwp/xenia-canary-uwp.vcxproj' /restore /m:2 /p:Configuration=Release /p:Platform=x64 /p:GenerateAppxPackageOnBuild=true /p:AppxBundle=Never /p:UapAppxPackageBuildMode=SideloadOnly /p:AppxPackageSigningEnabled=true /p:PackageCertificateKeyFile="$env:GITHUB_WORKSPACE\\xenia-ci.pfx" /p:PackageCertificatePassword="xenia-ci-build" /p:AppxPackageDir="$env:GITHUB_WORKSPACE\\AppPackages\\" 2>&1 | Tee-Object -FilePath build-uwp.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Package Xbox installer with signing certificate
         shell: pwsh
@@ -86,6 +117,7 @@ jobs:
           name: xenia-canary-uwp-ci-logs
           path: |
             configure-uwp.log
+            build-core.log
             build-uwp.log
           if-no-files-found: ignore
           retention-days: 14
