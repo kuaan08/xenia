@@ -8,6 +8,7 @@
  */
 
 #include "xenia/app/emulator_window.h"
+#include "xenia/app/frontend_text.h"
 
 #include <algorithm>
 #include <cctype>
@@ -309,7 +310,7 @@ static cvar::ConfigVar<T>* FindConfigVar(const char* name) {
 // The interface language does not change the Xbox 360 guest system language.
 // Unknown strings intentionally fall back to English while more panels are
 // localized. Keys remain the original English UI captions.
-static const char* FrontendText(const char* english) {
+const char* FrontendText(const char* english) {
   const auto* var = FindConfigVar<std::string>("ui_language");
   const std::string code = var ? var->GetTypedConfigValue() : "en";
   int language = -1;
@@ -319,6 +320,224 @@ static const char* FrontendText(const char* english) {
   else if (code == "de") language = 3;
   else if (code == "it") language = 4;
   if (language == -1) return english;
+
+  // Broad PT-BR coverage for settings, profiles, library actions and UI.
+  // Other languages keep their existing translations and English fallback.
+  if (language == 0) {
+    struct PortugueseText {
+      const char* english;
+      const char* portuguese;
+    };
+    static constexpr PortugueseText pt_br[] = {
+      {"games", "jogos"},
+      {"settings", "configurações"},
+      {"paths", "pastas"},
+      {"about", "sobre"},
+      {"Search", "Buscar"},
+      {"Game Menu", "Menu do jogo"},
+      {"Back", "Voltar"},
+      {"Select", "Selecionar"},
+      {"Close", "Fechar"},
+      {"OK", "OK"},
+      {"Cancel", "Cancelar"},
+      {"Browse", "Procurar"},
+      {"No Profiles Found", "Nenhum perfil encontrado"},
+      {"Create Profile", "Criar perfil"},
+      {"Create profile & migrate data", "Criar perfil e migrar dados"},
+      {"Open profile menu", "Abrir menu de perfis"},
+      {"Open Profile Menu", "Abrir menu de perfis"},
+      {"Profiles Menu", "Menu de perfis"},
+      {"There is no profile available! You will not be able to save\nwithout one.\n\nWould you like to create one?", "Não há perfil disponível! Você não poderá salvar\nseu progresso sem um perfil.\n\nDeseja criar um agora?"},
+      {"Profile is not signed in", "Perfil não conectado"},
+      {"Login", "Entrar"},
+      {"Logout", "Sair da conta"},
+      {"Modify", "Modificar"},
+      {"Show Played Titles", "Mostrar jogos utilizados"},
+      {"Delete Profile", "Excluir perfil"},
+      {"Yes, delete it!", "Sim, excluir!"},
+      {"Publisher: %s", "Distribuidora: %s"},
+      {"Developer: %s", "Desenvolvedora: %s"},
+      {"Genre: %s", "Gênero: %s"},
+      {"Release Date: %s", "Lançamento: %s"},
+      {"Rating: %s", "Avaliação: %s"},
+      {"Title ID: %s", "ID do jogo: %s"},
+      {"Type: %s", "Tipo: %s"},
+      {"Metadata: Fetching from x360db...", "Metadados: obtendo dados do x360db..."},
+      {"No games match your search.", "Nenhum jogo corresponde à busca."},
+      {"Apply Patch", "Aplicar patch"},
+      {"Apply Optimized Settings", "Aplicar configurações otimizadas"},
+      {"Create / Edit Per-Game Config", "Criar/editar configurações por jogo"},
+      {"Apply Config Overrides", "Importar configurações personalizadas"},
+      {"Install Plugin", "Instalar plugin"},
+      {"Manage DLC", "Gerenciar DLC"},
+      {"Manage Title Updates", "Gerenciar atualizações"},
+      {"Create Per Game Config", "Criar configurações por jogo"},
+      {"Browse and Edit", "Procurar e editar"},
+      {"Re-download and Override", "Baixar novamente e substituir"},
+      {"Set Empty", "Esvaziar"},
+      {"Reset To Default", "Restaurar padrão"},
+      {"Apply##pergame_apply", "Aplicar##pergame_apply"},
+      {"Cancel##pergame_cancel", "Cancelar##pergame_cancel"},
+      {"Some D3D12 settings require restarting the game.", "Algumas opções de D3D12 exigem reiniciar o jogo."},
+      {"Allow Variable Refresh Rate/Tearing", "Permitir VRR/tearing"},
+      {"Clear Memory Page State", "Limpar estado das páginas de memória"},
+      {"Readback Resolve", "Leitura de resolução"},
+      {"None", "Nenhum"},
+      {"Fast", "Rápido"},
+      {"Full", "Completo"},
+      {"Enable D3D12 Bindless", "Ativar bindless no D3D12"},
+      {"Submit On Primary Buffer End", "Enviar ao final do buffer primário"},
+      {"Enable D3D12 Tiled Shared Memory (On Xbox keep\nOFF otherwise games will crash)", "Ativar memória compartilhada em blocos D3D12 (no Xbox\nMANTENHA DESLIGADO: pode travar os jogos)"},
+      {"Scaling & Sharpening Effect", "Efeito de escala e nitidez"},
+      {"Bilinear", "Bilinear"},
+      {"Anti-Aliasing", "Suavização de bordas"},
+      {"FXAA Extreme", "FXAA extremo"},
+      {"CAS Additional Sharpness", "Nitidez adicional CAS"},
+      {"Reset##ResetCASAdditionalSharpnessSettings", "Redefinir##ResetCASAdditionalSharpnessSettings"},
+      {"FSR Max Upsampling Passes", "Passagens máximas de upscaling FSR"},
+      {"FSR Sharpness Reduction", "Redução de nitidez FSR"},
+      {"Reset##ResetFSRSharpnessReductionSettings", "Redefinir##ResetFSRSharpnessReductionSettings"},
+      {"Letterbox Presentation", "Exibição em letterbox"},
+      {"Presentation Safe Area Width", "Largura da área segura"},
+      {"Presentation Safe Area Height", "Altura da área segura"},
+      {"Use Presentation Render-Pass Clear", "Limpar render pass de apresentação"},
+      {"Host Present From Non-UI Thread", "Apresentação em thread separada da interface"},
+      {"Postprocess Dither", "Pontilhamento no pós-processamento"},
+      {"Graphics System", "Sistema gráfico"},
+      {"Any", "Automático"},
+      {"Null", "Nulo"},
+      {"Disable Context Promotion", "Desativar promoção de contexto"},
+      {"Allow Invalid Upload Range", "Permitir faixa de upload inválida"},
+      {"Allow Invalid Fetch Constants", "Permitir constantes de fetch inválidas"},
+      {"DXBC Switch", "Chave DXBC"},
+      {"Native 2X MSAA", "MSAA nativo 2x"},
+      {"V-Sync", "Sincronização vertical (V-Sync)"},
+      {"Framerate Limit", "Limite de FPS"},
+      {"Draw Resolution Scaled Texture Offsets", "Escalar deslocamentos de textura pela resolução"},
+      {"Render Target Path", "Método de alvo de renderização"},
+      {"Gamma Render Target As sRGB", "Usar sRGB no alvo de renderização gamma"},
+      {"Query Occlusion Lower Threshold", "Limite inferior de consulta de oclusão"},
+      {"Query Occlusion Upper Threshold", "Limite superior de consulta de oclusão"},
+      {"Use Fuzzy Alpha Epsilon", "Usar tolerância alfa aproximada"},
+      {"Native Stencil Value Output", "Saída nativa do stencil"},
+      {"SNORM16 Render Target Full Range", "Faixa completa de SNORM16"},
+      {"MRT EDRAM Used Range Clamp To Min", "Limitar faixa de EDRAM ao mínimo"},
+      {"Store Shaders", "Armazenar shaders"},
+      {"Preload Shader Cache", "Pré-carregar cache de shaders"},
+      {"Draw Resolution Scale", "Escala de resolução de desenho"},
+      {"Audio System", "Sistema de áudio"},
+      {"Mute Audio", "Silenciar áudio"},
+      {"Ignore Offset", "Ignorar deslocamento"},
+      {"Protect On Release", "Proteger na liberação"},
+      {"Protect Zero", "Proteger endereço zero"},
+      {"Scribble Heap", "Preencher heap para depuração"},
+      {"Mount Cache", "Montar cache"},
+      {"Mount Scratch", "Montar área temporária"},
+      {"Mount Memory Unit", "Montar unidade de memória"},
+      {"Show Interface Overlay", "Mostrar overlay da interface"},
+      {"Interface Overlay Opacity", "Opacidade do overlay"},
+      {"Interface Overlay", "Overlay da interface"},
+      {"Guide Panel Image", "Imagem do painel Guide"},
+      {"Background Image", "Imagem de fundo"},
+      {"Custom background: %s", "Fundo personalizado: %s"},
+      {"Browse for Custom Background...", "Escolher fundo personalizado..."},
+      {"Change Custom Background...", "Alterar fundo personalizado..."},
+      {"Clear Custom Background", "Limpar fundo personalizado"},
+      {"Enable Dynamic Game Backgrounds", "Ativar fundos dinâmicos dos jogos"},
+      {"Hide Tabs Text", "Ocultar texto das abas"},
+      {"UI Accent Color", "Cor de destaque da interface"},
+      {"Text Effect", "Efeito do texto"},
+      {"Text Color", "Cor do texto"},
+      {"Text Brightness", "Brilho do texto"},
+      {"Text Contrast", "Contraste do texto"},
+      {"Enable Host Guest Stack Synchronization", "Sincronizar pilhas do host e do jogo"},
+      {"Internal Display Resolution", "Resolução interna"},
+      {"Default (guest setting)", "Padrão (jogo)"},
+      {"Custom", "Personalizado"},
+      {"Custom Resolution Width", "Largura personalizada"},
+      {"Custom Resolution Height", "Altura personalizada"},
+      {"Widescreen", "Tela panorâmica"},
+      {"Use 50Hz Video Mode", "Usar modo de vídeo 50 Hz"},
+      {"Interlaced Video Mode", "Vídeo entrelaçado"},
+      {"Left Stick Deadzone", "Zona morta do analógico esquerdo"},
+      {"Right Stick Deadzone", "Zona morta do analógico direito"},
+      {"Left Trigger Deadzone", "Zona morta do gatilho esquerdo"},
+      {"Right Trigger Deadzone", "Zona morta do gatilho direito"},
+      {"Controller Vibration", "Vibração do controle"},
+      {"Forward Guide Button", "Encaminhar botão Guide"},
+      {"Set CL", "Definir linha de comando"},
+      {"Restart the game after changing GPU/shader options.", "Reinicie o jogo após alterar GPU ou shaders."},
+      {"Games found: %zu", "Jogos encontrados: %zu"},
+      {"Choose an Xbox 360 ISO, default.xex or content package.", "Escolha uma ISO de Xbox 360, default.xex ou pacote de conteúdo."},
+      {"Achievement Notifications", "Notificações de conquistas"},
+      {"Show Notifications", "Mostrar notificações"},
+      {"Hide Notifications", "Ocultar notificações"},
+      {"Storage Selection Dialog", "Seleção de armazenamento"},
+      {"Enable Dialog", "Ativar janela"},
+      {"Disable Dialog", "Desativar janela"},
+      {"Description Preference", "Preferência de descrição"},
+      {"Short Descriptions", "Descrições curtas"},
+      {"Long Descriptions", "Descrições longas"},
+      {"Boxart Image Preference", "Preferência de capa"},
+      {"Banner First", "Priorizar banner"},
+      {"Gallery First", "Priorizar galeria"},
+      {"Game List Art", "Arte na lista de jogos"},
+      {"Icon First", "Priorizar ícone"},
+      {"Box Art First", "Priorizar capa"},
+      {"Genre Metadata", "Gênero nos metadados"},
+      {"Show Genre", "Mostrar gênero"},
+      {"Hide Genre", "Ocultar gênero"},
+      {"Developer Metadata", "Desenvolvedora nos metadados"},
+      {"Show Developer", "Mostrar desenvolvedora"},
+      {"Hide Developer", "Ocultar desenvolvedora"},
+      {"Title Text", "Título do jogo"},
+      {"Show Game Title", "Mostrar título do jogo"},
+      {"Hide Game Title", "Ocultar título do jogo"},
+      {"Title ID Metadata", "ID nos metadados"},
+      {"Show Title ID", "Mostrar ID do jogo"},
+      {"Hide Title ID", "Ocultar ID do jogo"},
+      {"Release Date Metadata", "Data nos metadados"},
+      {"Show Release Date", "Mostrar data"},
+      {"Hide Release Date", "Ocultar data"},
+      {"User Rating Metadata", "Avaliação nos metadados"},
+      {"Show User Rating", "Mostrar avaliação"},
+      {"Hide User Rating", "Ocultar avaliação"},
+      {"No interface overlays found in Assets/interface_overlays/", "Nenhum overlay encontrado em Assets/interface_overlays/"},
+      {"No guide images found in Assets/guide_images/", "Nenhuma imagem Guide em Assets/guide_images/"},
+      {"No background images found in Assets/backgrounds/", "Nenhuma imagem de fundo em Assets/backgrounds/"},
+      {"Choose a Theme", "Escolher um tema"},
+      {"Reset Theme", "Restaurar tema"},
+      {"All themes support background and Blades overlays.", "Todos os temas aceitam fundos e overlays Blades."},
+      {"Opacity of your chosen Blades overlay PNG in all themes.", "Opacidade do PNG Blades selecionado em todos os temas."},
+      {"Red", "Vermelho"},
+      {"Orange", "Laranja"},
+      {"Green", "Verde"},
+      {"Purple", "Roxo"},
+      {"Blue", "Azul"},
+      {"Yellow", "Amarelo"},
+      {"Grey", "Cinza"},
+      {"Black", "Preto"},
+      {"White", "Branco"},
+      {"Shadow", "Sombra"},
+      {"Lift", "Relevo"},
+      {"Glow", "Brilho"},
+      {"Outline", "Contorno"},
+      {"No Effect", "Sem efeito"},
+      {"Strong", "Forte"},
+      {"Default", "Padrão"},
+      {"Enabled", "Ativado"},
+      {"Disabled", "Desativado"},
+      {"Game Settings", "Configurações do jogo"},
+      {"Game Details", "Detalhes do jogo"},
+      {"Refresh Library", "Atualizar biblioteca"},
+      {"Refresh Games", "Atualizar jogos"},
+    };
+    for (const auto& item : pt_br) {
+      if (std::strcmp(item.english, english) == 0) {
+        return item.portuguese;
+      }
+    }
+  }
 
   struct Translation {
     const char* english;
@@ -4464,11 +4683,11 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               if (selected_row->has_metadata) {
                 if (!selected_row->metadata.publisher.empty()) {
                   ImGui::Spacing();
-                  ImGui::TextDisabled("Publisher: %s", selected_row->metadata.publisher.c_str());
+                  ImGui::TextDisabled(FrontendText("Publisher: %s"), selected_row->metadata.publisher.c_str());
                 }
                 if (cvars::ui_show_developer_metadata &&
                     !selected_row->metadata.developer.empty()) {
-                  ImGui::TextDisabled("Developer: %s", selected_row->metadata.developer.c_str());
+                  ImGui::TextDisabled(FrontendText("Developer: %s"), selected_row->metadata.developer.c_str());
                 }
                 if (cvars::ui_show_genre_metadata &&
                     !selected_row->metadata.genre.empty()) {
@@ -4477,30 +4696,30 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                     if (i > 0) genre_str += ",";
                     genre_str += selected_row->metadata.genre[i];
                   }
-                  ImGui::TextDisabled("Genre: %s", genre_str.c_str());
+                  ImGui::TextDisabled(FrontendText("Genre: %s"), genre_str.c_str());
                 }
                 if (cvars::ui_show_release_date_metadata &&
                     !selected_row->metadata.release_date.empty()) {
-                  ImGui::TextDisabled("Release Date: %s", selected_row->metadata.release_date.c_str());
+                  ImGui::TextDisabled(FrontendText("Release Date: %s"), selected_row->metadata.release_date.c_str());
                 }
                 if (cvars::ui_show_user_rating_metadata &&
                     !selected_row->metadata.user_rating.empty()) {
-                  ImGui::TextDisabled("Rating: %s", selected_row->metadata.user_rating.c_str());
+                  ImGui::TextDisabled(FrontendText("Rating: %s"), selected_row->metadata.user_rating.c_str());
                 }
               }
               
               if (cvars::ui_show_title_id_metadata &&
                   !selected_row->title_id.empty()) {
                 ImGui::Spacing();
-                ImGui::TextDisabled("Title ID: %s", selected_row->title_id.c_str());
+                ImGui::TextDisabled(FrontendText("Title ID: %s"), selected_row->title_id.c_str());
               }
               if (selected_row->has_metadata && selected_row->metadata.metadata_ready) {
                 if (!selected_row->metadata.title_type.empty()) {
-                  ImGui::TextDisabled("Type: %s",
+                  ImGui::TextDisabled(FrontendText("Type: %s"),
                                       selected_row->metadata.title_type.c_str());
                 }
               } else {
-                ImGui::TextDisabled("Metadata: Fetching from x360db...");
+                ImGui::TextDisabled(FrontendText("Metadata: Fetching from x360db..."));
               }
             }
           }
@@ -4838,7 +5057,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               }
 
               if (has_query && filtered_rows.empty()) {
-                ImGui::TextWrapped("No games match your search.");
+                ImGui::TextWrapped(FrontendText("No games match your search."));
               }
             }
             ImGui::EndChild();
@@ -5070,7 +5289,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             };
 
             if (!close_context_menu) {
-            if (draw_game_context_option("Apply Patch")) {
+            if (draw_game_context_option(FrontendText("Apply Patch"))) {
             std::filesystem::path patches_root = storage_root / "patches";
             std::string patches_dir = patches_root.string();
             std::string title_id =
@@ -5096,7 +5315,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             }
           }
 
-          if (draw_game_context_option("Apply Optimized Settings")) {
+          if (draw_game_context_option(FrontendText("Apply Optimized Settings"))) {
             std::filesystem::path config_root = storage_root / "config";
             std::string config_dir = config_root.string();
             std::string title_id =
@@ -5125,7 +5344,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             }
           }
 
-          if (draw_game_context_option("Create / Edit Per-Game Config")) {
+          if (draw_game_context_option(FrontendText("Create / Edit Per-Game Config"))) {
             std::string title_id =
                 UWP::GetTitleIdFromPath(selected_game_path_);
             const auto config_root = storage_root / "config";
@@ -5167,7 +5386,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             }
           }
 
-          if (draw_game_context_option("Apply Config Overrides")) {
+          if (draw_game_context_option(FrontendText("Apply Config Overrides"))) {
             imgui_drawer()->SetIgnoreInput(true);
             UWP::SelectFile([this, apply_per_game_config,
                              parse_title_id_from_filename,
@@ -5247,7 +5466,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             });
           }
 
-          if (draw_game_context_option("Install Plugin")) {
+          if (draw_game_context_option(FrontendText("Install Plugin"))) {
             std::filesystem::path plugins_root = storage_root / "plugins";
             std::string title_id =
                 UWP::GetTitleIdFromPath(selected_game_path_);
@@ -5293,7 +5512,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             }
           }
 
-          if (draw_game_context_option("Manage DLC")) {
+          if (draw_game_context_option(FrontendText("Manage DLC"))) {
             std::string title_id =
                 UWP::GetTitleIdFromPath(selected_game_path_);
             if (!title_id.empty()) {
@@ -5305,7 +5524,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             }
           }
 
-          if (draw_game_context_option("Manage Title Updates")) {
+          if (draw_game_context_option(FrontendText("Manage Title Updates"))) {
             std::string title_id = UWP::GetTitleIdFromPath(selected_game_path_);
             std::string media_id = UWP::GetMediaIdFromPath(selected_game_path_);
             const auto title_updates_root = storage_root / "title_updates";
@@ -5447,11 +5666,11 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             const float footer_select_icon_offset = 42.0f * ux;
             xe::app::DrawFooterPrompt(
                 overlay_draw_list, GetOrCreateButtonTexture('B'),
-                footer_text_size, footer_icon_size, "Back", footer_back_y,
+                footer_text_size, footer_icon_size, FrontendText("Back"), footer_back_y,
                 footer_back_text_x, footer_back_icon_offset);
             xe::app::DrawFooterPrompt(
                 overlay_draw_list, GetOrCreateButtonTexture('A'),
-                footer_text_size, footer_icon_size, "Select", footer_select_y,
+                footer_text_size, footer_icon_size, FrontendText("Select"), footer_select_y,
                 footer_select_text_x, footer_select_icon_offset);
           }
 
@@ -5571,7 +5790,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               action_popup_mode_ == ActionPopupMode::kManualConfigPrompt) {
             const ImVec2 button_size((field_width - button_gap) * 0.5f, 0.0f);
             focus_first_action();
-            if (draw_action_button("Browse", button_size)) {
+            if (draw_action_button(FrontendText("Browse"), button_size)) {
               imgui_drawer()->SetIgnoreInput(true);
               UWP::SelectFile([this, parse_title_id_from_filename,
                                apply_per_game_config,
@@ -5653,7 +5872,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               });
             }
             ImGui::SameLine(0.0f, button_gap);
-            if (draw_action_button("Cancel", button_size)) {
+            if (draw_action_button(FrontendText("Cancel"), button_size)) {
               ImGui::CloseCurrentPopup();
               action_popup_mode_ = ActionPopupMode::kInfo;
               pending_manual_kind_ = ManualInstallKind::kNone;
@@ -5661,7 +5880,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           } else if (action_popup_mode_ == ActionPopupMode::kPerGameConfigPrompt) {
             const ImVec2 button_size(field_width, 0.0f);
             focus_first_action();
-            if (draw_action_button("Create Per Game Config", button_size)) {
+            if (draw_action_button(FrontendText("Create Per Game Config"), button_size)) {
               std::string initial =
                   "# Per-game config overrides\n"
                   "# Add only the options you want to override for this title.\n"
@@ -5680,7 +5899,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             }
             ImGui::SetCursorScreenPos(
                 ImVec2(content_x, ImGui::GetCursorScreenPos().y + (8.0f * uy)));
-            if (draw_action_button("Browse and Edit", button_size)) {
+            if (draw_action_button(FrontendText("Browse and Edit"), button_size)) {
               imgui_drawer()->SetIgnoreInput(true);
               UWP::SelectFile([this, open_per_game_config_editor](std::string file_path) {
                 imgui_drawer()->SetIgnoreInput(false);
@@ -5700,7 +5919,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             }
             ImGui::SetCursorScreenPos(
                 ImVec2(content_x, ImGui::GetCursorScreenPos().y + (8.0f * uy)));
-            if (draw_action_button("Cancel", button_size)) {
+            if (draw_action_button(FrontendText("Cancel"), button_size)) {
               ImGui::CloseCurrentPopup();
               action_popup_mode_ = ActionPopupMode::kInfo;
             }
@@ -5708,7 +5927,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                      ActionPopupMode::kExistingDownloadPrompt) {
             const ImVec2 button_size(field_width, 0.0f);
             focus_first_action();
-            if (draw_action_button("Re-download and Override", button_size)) {
+            if (draw_action_button(FrontendText("Re-download and Override"), button_size)) {
               const auto kind = pending_existing_download_kind_;
               const auto dest = pending_existing_download_destination_;
               const auto title_id = pending_existing_download_title_id_;
@@ -5727,7 +5946,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             }
             ImGui::SetCursorScreenPos(
                 ImVec2(content_x, ImGui::GetCursorScreenPos().y + (8.0f * uy)));
-            if (draw_action_button("Cancel", button_size)) {
+            if (draw_action_button(FrontendText("Cancel"), button_size)) {
               pending_existing_download_kind_ = ManualInstallKind::kNone;
               pending_existing_download_destination_.clear();
               pending_existing_download_title_id_.clear();
@@ -5736,7 +5955,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             }
           } else {
             focus_first_action();
-            if (draw_action_button("OK", ImVec2(field_width, 0.0f))) {
+            if (draw_action_button(FrontendText("OK"), ImVec2(field_width, 0.0f))) {
               ImGui::CloseCurrentPopup();
             }
           }
@@ -5752,11 +5971,11 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           const float footer_select_text_x = footer_base_x - (60.0f * ux);
           const float footer_select_icon_offset = 42.0f * ux;
           xe::app::DrawFooterPrompt(action_draw_list, GetOrCreateButtonTexture('B'),
-                                    footer_text_size, footer_icon_size, "Back",
+                                    footer_text_size, footer_icon_size, FrontendText("Back"),
                                     footer_back_y, footer_back_text_x,
                                     footer_back_icon_offset);
           xe::app::DrawFooterPrompt(action_draw_list, GetOrCreateButtonTexture('A'),
-                                    footer_text_size, footer_icon_size, "Select",
+                                    footer_text_size, footer_icon_size, FrontendText("Select"),
                                     footer_select_y, footer_select_text_x,
                                     footer_select_icon_offset);
 
@@ -5974,7 +6193,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
               ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
               focus_if_requested("left_add_button");
-              bool add_button_pressed = ImGui::Button("+##pergame_add_btn", ImVec2(28.0f, 0.0f));
+              bool add_button_pressed = ImGui::Button(FrontendText("+##pergame_add_btn"), ImVec2(28.0f, 0.0f));
               bool add_button_highlighted = ImGui::IsItemHovered() || ImGui::IsItemActive() || ImGui::IsItemFocused();
               ImVec2 add_button_min = ImGui::GetItemRectMin();
               ImVec2 add_button_max = ImGui::GetItemRectMax();
@@ -6109,7 +6328,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
             ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
             focus_if_requested("left_remove_mode_button");
-            bool remove_button_pressed = ImGui::Button("-##pergame_remove_btn", ImVec2(28.0f, 0.0f));
+            bool remove_button_pressed = ImGui::Button(FrontendText("-##pergame_remove_btn"), ImVec2(28.0f, 0.0f));
             bool remove_button_highlighted = ImGui::IsItemHovered() || ImGui::IsItemActive() || ImGui::IsItemFocused();
             ImVec2 remove_button_min = ImGui::GetItemRectMin();
             ImVec2 remove_button_max = ImGui::GetItemRectMax();
@@ -6505,7 +6724,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                 if (option &&
                     (option->value_type == PerGameConfigValueType::kString ||
                      option->value_type == PerGameConfigValueType::kPath) &&
-                    ImGui::Button("Set Empty")) {
+                    ImGui::Button(FrontendText("Set Empty"))) {
                   apply_per_game_value_change("\"\"");
                 }
                 track_per_game_focus(PerGameConfigFocusSide::kRight,
@@ -6514,7 +6733,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
               if (option) {
                 ImGui::Separator();
-                if (ImGui::Button("Reset To Default")) {
+                if (ImGui::Button(FrontendText("Reset To Default"))) {
                   apply_per_game_value_change(option->default_value);
                 }
                 track_per_game_focus(PerGameConfigFocusSide::kRight,
@@ -6588,7 +6807,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           ImGui::PushStyleColor(ImGuiCol_NavCursor,
                                 ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
           focus_if_requested("left_apply_button");
-          bool apply_button_pressed = ImGui::Button("Apply##pergame_apply");
+          bool apply_button_pressed = ImGui::Button(FrontendText("Apply##pergame_apply"));
           bool apply_button_highlighted =
               ImGui::IsItemHovered() || ImGui::IsItemActive() ||
               ImGui::IsItemFocused();
@@ -6666,7 +6885,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           ImGui::PushStyleColor(ImGuiCol_NavCursor,
                                 ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
           focus_if_requested("left_cancel_button");
-          bool cancel_button_pressed = ImGui::Button("Cancel##pergame_cancel");
+          bool cancel_button_pressed = ImGui::Button(FrontendText("Cancel##pergame_cancel"));
           bool cancel_button_highlighted =
               ImGui::IsItemHovered() || ImGui::IsItemActive() ||
               ImGui::IsItemFocused();
@@ -6726,11 +6945,11 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           const float footer_select_icon_offset = 42.0f * ux;
           xe::app::DrawFooterPrompt(
               pergame_draw_list, GetOrCreateButtonTexture('B'),
-              footer_text_size, footer_icon_size, "Back", footer_back_y,
+              footer_text_size, footer_icon_size, FrontendText("Back"), footer_back_y,
               footer_back_text_x, footer_back_icon_offset);
           xe::app::DrawFooterPrompt(
               pergame_draw_list, GetOrCreateButtonTexture('A'),
-              footer_text_size, footer_icon_size, "Select", footer_select_y,
+              footer_text_size, footer_icon_size, FrontendText("Select"), footer_select_y,
               footer_select_text_x, footer_select_icon_offset);
         }
 
@@ -7071,7 +7290,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           }
 
           ImGui::Spacing();
-          if (DrawTextEffectButton("Open Profile Menu")) {
+          if (DrawTextEffectButton(FrontendText("Open Profile Menu"))) {
             emulator_window_.ToggleProfilesConfigDialog();
           }
 
@@ -7103,12 +7322,12 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
         }
 
         if (settings_selected_section == 1) {
-          ImGui::TextDisabled("Some D3D12 settings require restarting the game.");
+          ImGui::TextDisabled(FrontendText("Some D3D12 settings require restarting the game."));
           auto c_allow_vrr_tearing = dynamic_cast<cvar::ConfigVar<bool>*>(
               cvar::ConfigVars
                   ->find("d3d12_allow_variable_refresh_rate_and_tearing")
                   ->second);
-          if (ImGui::Checkbox("Allow Variable Refresh Rate/Tearing",
+          if (ImGui::Checkbox(FrontendText("Allow Variable Refresh Rate/Tearing"),
                               c_allow_vrr_tearing->current_value())) {
             c_allow_vrr_tearing->OverrideConfigValue(
                 !(*c_allow_vrr_tearing->current_value()));
@@ -7121,7 +7340,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c_clear_memory_page = dynamic_cast<cvar::ConfigVar<bool>*>(
               cvar::ConfigVars->find("clear_memory_page_state")->second);
-          if (ImGui::Checkbox("Clear Memory Page State",
+          if (ImGui::Checkbox(FrontendText("Clear Memory Page State"),
                               c_clear_memory_page->current_value())) {
             c_clear_memory_page->OverrideConfigValue(
                 !(*c_clear_memory_page->current_value()));
@@ -7139,21 +7358,21 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               (*c_readback_resolve->current_value());
           {
             ScopedAccentComboStyle accent_combo_style;
-            if (ImGui::BeginCombo("Readback Resolve",
+            if (ImGui::BeginCombo(FrontendText("Readback Resolve"),
                                   c_readback_resolve_value.c_str())) {
-              if (ImGui::Selectable("None",
+              if (ImGui::Selectable(FrontendText("None"),
                                     c_readback_resolve_value == "none")) {
                 c_readback_resolve->OverrideConfigValue("none");
                 config::SaveConfig();
               }
 
-              if (ImGui::Selectable("Fast",
+              if (ImGui::Selectable(FrontendText("Fast"),
                                     c_readback_resolve_value == "fast")) {
                 c_readback_resolve->OverrideConfigValue("fast");
                 config::SaveConfig();
               }
 
-              if (ImGui::Selectable("Full",
+              if (ImGui::Selectable(FrontendText("Full"),
                                     c_readback_resolve_value == "full")) {
                 c_readback_resolve->OverrideConfigValue("full");
                 config::SaveConfig();
@@ -7169,7 +7388,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c_d3d12_bindless = dynamic_cast<cvar::ConfigVar<bool>*>(
               cvar::ConfigVars->find("d3d12_bindless")->second);
-          if (ImGui::Checkbox("Enable D3D12 Bindless",
+          if (ImGui::Checkbox(FrontendText("Enable D3D12 Bindless"),
                               c_d3d12_bindless->current_value())) {
             c_d3d12_bindless->OverrideConfigValue(
                 !(*c_d3d12_bindless->current_value()));
@@ -7184,7 +7403,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               dynamic_cast<cvar::ConfigVar<bool>*>(
                   cvar::ConfigVars->find("d3d12_submit_on_primary_buffer_end")
                       ->second);
-          if (ImGui::Checkbox("Submit On Primary Buffer End",
+          if (ImGui::Checkbox(FrontendText("Submit On Primary Buffer End"),
                               c_d3d12_submit_on_primary_buffer_end
                                   ->current_value())) {
             c_d3d12_submit_on_primary_buffer_end->OverrideConfigValue(
@@ -7201,7 +7420,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                   cvar::ConfigVars->find("d3d12_enable_tiled_shared_memory")
                       ->second);
           if (ImGui::Checkbox(
-                  "Enable D3D12 Tiled Shared Memory (On Xbox keep\nOFF otherwise games will crash)",
+                  FrontendText("Enable D3D12 Tiled Shared Memory (On Xbox keep\\nOFF otherwise games will crash)"),
                   c_d3d12_enable_tiled_shared_memory->current_value())) {
             c_d3d12_enable_tiled_shared_memory->OverrideConfigValue(
                 !(*c_d3d12_enable_tiled_shared_memory->current_value()));
@@ -7221,27 +7440,27 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               (*c_post_scaling->current_value());
           {
             ScopedAccentComboStyle accent_combo_style;
-            if (ImGui::BeginCombo("Scaling & Sharpening Effect",
+            if (ImGui::BeginCombo(FrontendText("Scaling & Sharpening Effect"),
                                   (c_post_scaling_value == ""
                                        ? "None"
                                        : c_post_scaling_value.c_str()))) {
-              if (ImGui::Selectable("None", c_post_scaling_value == "")) {
+              if (ImGui::Selectable(FrontendText("None"), c_post_scaling_value == "")) {
                 c_post_scaling->OverrideConfigValue("");
                 config::SaveConfig();
               }
 
-              if (ImGui::Selectable("Bilinear",
+              if (ImGui::Selectable(FrontendText("Bilinear"),
                                     c_post_scaling_value == "bilinear")) {
                 c_post_scaling->OverrideConfigValue("bilinear");
                 config::SaveConfig();
               }
 
-              if (ImGui::Selectable("CAS", c_post_scaling_value == "cas")) {
+              if (ImGui::Selectable(FrontendText("CAS"), c_post_scaling_value == "cas")) {
                 c_post_scaling->OverrideConfigValue("cas");
                 config::SaveConfig();
               }
 
-              if (ImGui::Selectable("FSR", c_post_scaling_value == "fsr")) {
+              if (ImGui::Selectable(FrontendText("FSR"), c_post_scaling_value == "fsr")) {
                 c_post_scaling->OverrideConfigValue("fsr");
                 config::SaveConfig();
               }
@@ -7260,19 +7479,19 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           {
             ScopedAccentComboStyle accent_combo_style;
             if (ImGui::BeginCombo(
-                    "Anti-Aliasing",
+                    FrontendText("Anti-Aliasing"),
                     (postaa_value == "" ? "None" : postaa_value.c_str()))) {
-              if (ImGui::Selectable("None", postaa_value == "")) {
+              if (ImGui::Selectable(FrontendText("None"), postaa_value == "")) {
                 c_post_aa->OverrideConfigValue("");
                 config::SaveConfig();
               }
 
-              if (ImGui::Selectable("FXAA", postaa_value == "fxaa")) {
+              if (ImGui::Selectable(FrontendText("FXAA"), postaa_value == "fxaa")) {
                 c_post_aa->OverrideConfigValue("fxaa");
                 config::SaveConfig();
               }
 
-              if (ImGui::Selectable("FXAA Extreme",
+              if (ImGui::Selectable(FrontendText("FXAA Extreme"),
                                     postaa_value == "fxaa_extreme")) {
                 c_post_aa->OverrideConfigValue("fxaa_extreme");
                 config::SaveConfig();
@@ -7291,12 +7510,12 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                   ->second);
           float cas_additional = (float)(*c_cas_sharpness->current_value());
           bool cas_additional_changed = false;
-          if (ImGui::SliderFloat("CAS Additional Sharpness", &cas_additional,
+          if (ImGui::SliderFloat(FrontendText("CAS Additional Sharpness"), &cas_additional,
                                  0.0f, 1.0f, "%.3f")) {
             cas_additional_changed = true;
           }
           ImGui::SameLine();
-          if (ImGui::Button("Reset##ResetCASAdditionalSharpnessSettings")) {
+          if (ImGui::Button(FrontendText("Reset##ResetCASAdditionalSharpnessSettings"))) {
             cas_additional =
                 ui::Presenter::GuestOutputPaintConfig::kCasAdditionalSharpnessDefault;
             cas_additional_changed = true;
@@ -7320,7 +7539,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           snprintf(value_label, 32, "%dx", fsr_max_upsampling_value);
           {
             ScopedAccentComboStyle accent_combo_style;
-            if (ImGui::BeginCombo("FSR Max Upsampling Passes", value_label)) {
+            if (ImGui::BeginCombo(FrontendText("FSR Max Upsampling Passes"), value_label)) {
               if (ImGui::Selectable("1x", fsr_max_upsampling_value == 1)) {
                 c_fsr_max_upsampling->OverrideConfigValue(1);
                 config::SaveConfig();
@@ -7362,7 +7581,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               sqrt(2.0f * fsr_sharpness_reduction);
           bool fsr_sharpness_changed = false;
           if (ImGui::SliderFloat(
-                  "FSR Sharpness Reduction", &fsr_slider_value,
+                  FrontendText("FSR Sharpness Reduction"), &fsr_slider_value,
                   ui::Presenter::GuestOutputPaintConfig::kFsrSharpnessReductionMin,
                   ui::Presenter::GuestOutputPaintConfig::kFsrSharpnessReductionMax,
                   fsr_label.c_str(), ImGuiSliderFlags_NoInput)) {
@@ -7370,7 +7589,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           }
           fsr_sharpness_reduction = 0.5f * fsr_slider_value * fsr_slider_value;
           ImGui::SameLine();
-          if (ImGui::Button("Reset##ResetFSRSharpnessReductionSettings")) {
+          if (ImGui::Button(FrontendText("Reset##ResetFSRSharpnessReductionSettings"))) {
             fsr_sharpness_reduction =
                 ui::Presenter::GuestOutputPaintConfig::kFsrSharpnessReductionDefault;
             fsr_sharpness_changed = true;
@@ -7387,7 +7606,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c_present_letterbox = dynamic_cast<cvar::ConfigVar<bool>*>(
               cvar::ConfigVars->find("present_letterbox")->second);
-          if (ImGui::Checkbox("Letterbox Presentation",
+          if (ImGui::Checkbox(FrontendText("Letterbox Presentation"),
                               c_present_letterbox->current_value())) {
             c_present_letterbox->OverrideConfigValue(
                 !(*c_present_letterbox->current_value()));
@@ -7401,7 +7620,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           auto c_present_safe_area_x = dynamic_cast<cvar::ConfigVar<int32_t>*>(
               cvar::ConfigVars->find("present_safe_area_x")->second);
           int present_safe_area_x = (*c_present_safe_area_x->current_value());
-          if (ImGui::SliderInt("Presentation Safe Area Width",
+          if (ImGui::SliderInt(FrontendText("Presentation Safe Area Width"),
                                &present_safe_area_x, 1, 100, "%d%%")) {
             c_present_safe_area_x->OverrideConfigValue(present_safe_area_x);
             config::SaveConfig();
@@ -7414,7 +7633,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           auto c_present_safe_area_y = dynamic_cast<cvar::ConfigVar<int32_t>*>(
               cvar::ConfigVars->find("present_safe_area_y")->second);
           int present_safe_area_y = (*c_present_safe_area_y->current_value());
-          if (ImGui::SliderInt("Presentation Safe Area Height",
+          if (ImGui::SliderInt(FrontendText("Presentation Safe Area Height"),
                                &present_safe_area_y, 1, 100, "%d%%")) {
             c_present_safe_area_y->OverrideConfigValue(present_safe_area_y);
             config::SaveConfig();
@@ -7427,7 +7646,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           auto c_present_render_pass_clear =
               dynamic_cast<cvar::ConfigVar<bool>*>(
                   cvar::ConfigVars->find("present_render_pass_clear")->second);
-          if (ImGui::Checkbox("Use Presentation Render-Pass Clear",
+          if (ImGui::Checkbox(FrontendText("Use Presentation Render-Pass Clear"),
                               c_present_render_pass_clear->current_value())) {
             c_present_render_pass_clear->OverrideConfigValue(
                 !(*c_present_render_pass_clear->current_value()));
@@ -7442,7 +7661,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               dynamic_cast<cvar::ConfigVar<bool>*>(
                   cvar::ConfigVars->find("host_present_from_non_ui_thread")
                       ->second);
-          if (ImGui::Checkbox("Host Present From Non-UI Thread",
+          if (ImGui::Checkbox(FrontendText("Host Present From Non-UI Thread"),
                               c_host_present_from_non_ui_thread
                                   ->current_value())) {
             c_host_present_from_non_ui_thread->OverrideConfigValue(
@@ -7456,7 +7675,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c_post_dither = dynamic_cast<cvar::ConfigVar<bool>*>(
               cvar::ConfigVars->find("postprocess_dither")->second);
-          if (ImGui::Checkbox("Postprocess Dither",
+          if (ImGui::Checkbox(FrontendText("Postprocess Dither"),
                               c_post_dither->current_value())) {
             c_post_dither->OverrideConfigValue(!(*c_post_dither->current_value()));
             config::SaveConfig();
@@ -7482,28 +7701,28 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                 gpu_value.empty() ? "Any" : gpu_value.c_str();
             {
               ScopedAccentComboStyle accent_combo_style;
-              if (ImGui::BeginCombo("Graphics System", gpu_preview)) {
-                if (ImGui::Selectable("Any", gpu_value == "any")) {
+              if (ImGui::BeginCombo(FrontendText("Graphics System"), gpu_preview)) {
+                if (ImGui::Selectable(FrontendText("Any"), gpu_value == "any")) {
                   c_gpu->OverrideConfigValue("any");
                   config::SaveConfig();
                 }
 
 #if XE_PLATFORM_WIN32
-                if (ImGui::Selectable("D3D12", gpu_value == "d3d12")) {
+                if (ImGui::Selectable(FrontendText("D3D12"), gpu_value == "d3d12")) {
                   c_gpu->OverrideConfigValue("d3d12");
                   config::SaveConfig();
                 }
 #endif
 
 #if !XE_PLATFORM_WINRT && !XE_PLATFORM_MAC
-                if (ImGui::Selectable("Vulkan", gpu_value == "vulkan")) {
+                if (ImGui::Selectable(FrontendText("Vulkan"), gpu_value == "vulkan")) {
                   c_gpu->OverrideConfigValue("vulkan");
                   config::SaveConfig();
                 }
 #endif
 
 #if !XE_PLATFORM_WINRT
-                if (ImGui::Selectable("Null", gpu_value == "null")) {
+                if (ImGui::Selectable(FrontendText("Null"), gpu_value == "null")) {
                   c_gpu->OverrideConfigValue("null");
                   config::SaveConfig();
                 }
@@ -7531,7 +7750,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                   : nullptr;
           if (c_disable_context_promotion) {
             if (ImGui::Checkbox(
-                    "Disable Context Promotion",
+                    FrontendText("Disable Context Promotion"),
                     c_disable_context_promotion->current_value())) {
               c_disable_context_promotion->OverrideConfigValue(
                   !(*c_disable_context_promotion->current_value()));
@@ -7552,7 +7771,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                   : nullptr;
           if (c_allow_invalid_upload_range) {
             if (ImGui::Checkbox(
-                    "Allow Invalid Upload Range",
+                    FrontendText("Allow Invalid Upload Range"),
                     c_allow_invalid_upload_range->current_value())) {
               c_allow_invalid_upload_range->OverrideConfigValue(
                   !(*c_allow_invalid_upload_range->current_value()));
@@ -7572,7 +7791,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                         find_allow_invalid->second)
                   : nullptr;
           if (c_allow_invalid) {
-            if (ImGui::Checkbox("Allow Invalid Fetch Constants",
+            if (ImGui::Checkbox(FrontendText("Allow Invalid Fetch Constants"),
                                 c_allow_invalid->current_value())) {
               c_allow_invalid->OverrideConfigValue(
                   !(*c_allow_invalid->current_value()));
@@ -7586,7 +7805,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c_dxbc_switch = FindConfigVar<bool>("dxbc_switch");
           if (c_dxbc_switch) {
-            if (ImGui::Checkbox("DXBC Switch",
+            if (ImGui::Checkbox(FrontendText("DXBC Switch"),
                                 c_dxbc_switch->current_value())) {
               c_dxbc_switch->OverrideConfigValue(
                   !(*c_dxbc_switch->current_value()));
@@ -7600,7 +7819,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c2xmsaa = FindConfigVar<bool>("native_2x_msaa");
           if (c2xmsaa) {
-            if (ImGui::Checkbox("Native 2X MSAA", c2xmsaa->current_value())) {
+            if (ImGui::Checkbox(FrontendText("Native 2X MSAA"), c2xmsaa->current_value())) {
               c2xmsaa->OverrideConfigValue(!(*c2xmsaa->current_value()));
               config::SaveConfig();
             }
@@ -7612,7 +7831,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c_vsync = FindConfigVar<bool>("vsync");
           if (c_vsync) {
-            if (ImGui::Checkbox("V-Sync", c_vsync->current_value())) {
+            if (ImGui::Checkbox(FrontendText("V-Sync"), c_vsync->current_value())) {
               c_vsync->OverrideConfigValue(!(*c_vsync->current_value()));
               config::SaveConfig();
             }
@@ -7626,7 +7845,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           if (c_framerate_limit) {
             int framerate_limit_value =
                 static_cast<int>((*c_framerate_limit->current_value()));
-            if (ImGui::SliderInt("Framerate Limit", &framerate_limit_value, 0,
+            if (ImGui::SliderInt(FrontendText("Framerate Limit"), &framerate_limit_value, 0,
                                  240)) {
               c_framerate_limit->OverrideConfigValue(
                   static_cast<uint64_t>(framerate_limit_value));
@@ -7641,7 +7860,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           auto c_draw_resolution_scaled_texture_offsets = FindConfigVar<bool>(
               "draw_resolution_scaled_texture_offsets");
           if (c_draw_resolution_scaled_texture_offsets) {
-            if (ImGui::Checkbox("Draw Resolution Scaled Texture Offsets",
+            if (ImGui::Checkbox(FrontendText("Draw Resolution Scaled Texture Offsets"),
                                 c_draw_resolution_scaled_texture_offsets
                                     ->current_value())) {
               c_draw_resolution_scaled_texture_offsets->OverrideConfigValue(
@@ -7664,23 +7883,23 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             {
               ScopedAccentComboStyle accent_combo_style;
               if (ImGui::BeginCombo(
-                      "Render Target Path",
+                      FrontendText("Render Target Path"),
                       (c_render_target_path_value == ""
                            ? "Any"
                            : c_render_target_path_value.c_str()))) {
-                if (ImGui::Selectable("Any",
+                if (ImGui::Selectable(FrontendText("Any"),
                                       c_render_target_path_value == "")) {
                   c_render_target_path->OverrideConfigValue("");
                   config::SaveConfig();
                 }
 
-                if (ImGui::Selectable("ROV",
+                if (ImGui::Selectable(FrontendText("ROV"),
                                       c_render_target_path_value == "rov")) {
                   c_render_target_path->OverrideConfigValue("rov");
                   config::SaveConfig();
                 }
 
-                if (ImGui::Selectable("RTV",
+                if (ImGui::Selectable(FrontendText("RTV"),
                                       c_render_target_path_value == "rtv")) {
                   c_render_target_path->OverrideConfigValue("rtv");
                   config::SaveConfig();
@@ -7697,7 +7916,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c_gamma_rt = FindConfigVar<bool>("gamma_render_target_as_srgb");
           if (c_gamma_rt) {
-            if (ImGui::Checkbox("Gamma Render Target As sRGB",
+            if (ImGui::Checkbox(FrontendText("Gamma Render Target As sRGB"),
                                 c_gamma_rt->current_value())) {
               c_gamma_rt->OverrideConfigValue(!(*c_gamma_rt->current_value()));
               config::SaveConfig();
@@ -7712,7 +7931,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               "query_occlusion_sample_lower_threshold");
           if (c_query_lower) {
             int query_lower = (*c_query_lower->current_value());
-            if (ImGui::InputInt("Query Occlusion Lower Threshold",
+            if (ImGui::InputInt(FrontendText("Query Occlusion Lower Threshold"),
                                 &query_lower)) {
               c_query_lower->OverrideConfigValue(query_lower);
               config::SaveConfig();
@@ -7727,7 +7946,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               "query_occlusion_sample_upper_threshold");
           if (c_query_upper) {
             int query_upper = (*c_query_upper->current_value());
-            if (ImGui::InputInt("Query Occlusion Upper Threshold",
+            if (ImGui::InputInt(FrontendText("Query Occlusion Upper Threshold"),
                                 &query_upper)) {
               c_query_upper->OverrideConfigValue(query_upper);
               config::SaveConfig();
@@ -7740,7 +7959,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c_fuzzy_alpha = FindConfigVar<bool>("use_fuzzy_alpha_epsilon");
           if (c_fuzzy_alpha) {
-            if (ImGui::Checkbox("Use Fuzzy Alpha Epsilon",
+            if (ImGui::Checkbox(FrontendText("Use Fuzzy Alpha Epsilon"),
                                 c_fuzzy_alpha->current_value())) {
               c_fuzzy_alpha->OverrideConfigValue(
                   !(*c_fuzzy_alpha->current_value()));
@@ -7756,7 +7975,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               FindConfigVar<bool>("native_stencil_value_output");
           if (c_native_stencil_value_output) {
             if (ImGui::Checkbox(
-                    "Native Stencil Value Output",
+                    FrontendText("Native Stencil Value Output"),
                     c_native_stencil_value_output->current_value())) {
               c_native_stencil_value_output->OverrideConfigValue(
                   !(*c_native_stencil_value_output->current_value()));
@@ -7771,7 +7990,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           auto c_snorm16_render_target_full_range =
               FindConfigVar<bool>("snorm16_render_target_full_range");
           if (c_snorm16_render_target_full_range) {
-            if (ImGui::Checkbox("SNORM16 Render Target Full Range",
+            if (ImGui::Checkbox(FrontendText("SNORM16 Render Target Full Range"),
                                 c_snorm16_render_target_full_range
                                     ->current_value())) {
               c_snorm16_render_target_full_range->OverrideConfigValue(
@@ -7787,7 +8006,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           auto c_mrt_edram_used_range_clamp_to_min =
               FindConfigVar<bool>("mrt_edram_used_range_clamp_to_min");
           if (c_mrt_edram_used_range_clamp_to_min) {
-            if (ImGui::Checkbox("MRT EDRAM Used Range Clamp To Min",
+            if (ImGui::Checkbox(FrontendText("MRT EDRAM Used Range Clamp To Min"),
                                 c_mrt_edram_used_range_clamp_to_min
                                     ->current_value())) {
               c_mrt_edram_used_range_clamp_to_min->OverrideConfigValue(
@@ -7802,7 +8021,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c_store_shaders = FindConfigVar<bool>("store_shaders");
           if (c_store_shaders) {
-            if (ImGui::Checkbox("Store Shaders",
+            if (ImGui::Checkbox(FrontendText("Store Shaders"),
                                 c_store_shaders->current_value())) {
               c_store_shaders->OverrideConfigValue(
                   !(*c_store_shaders->current_value()));
@@ -7817,7 +8036,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           auto c_preload_shader_cache =
               FindConfigVar<bool>("preload_shader_cache");
           if (c_preload_shader_cache) {
-            if (ImGui::Checkbox("Preload Shader Cache",
+            if (ImGui::Checkbox(FrontendText("Preload Shader Cache"),
                                 c_preload_shader_cache->current_value())) {
               c_preload_shader_cache->OverrideConfigValue(
                   !(*c_preload_shader_cache->current_value()));
@@ -7837,7 +8056,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             snprintf(scale_value_label, 32, "%dx", scale_value);
             {
               ScopedAccentComboStyle accent_combo_style;
-              if (ImGui::BeginCombo("Draw Resolution Scale",
+              if (ImGui::BeginCombo(FrontendText("Draw Resolution Scale"),
                                     scale_value_label)) {
                 if (ImGui::Selectable("1x", scale_value == 1)) {
                   c_scale_x->OverrideConfigValue(1);
@@ -7879,33 +8098,33 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           const char* apu_preview = apu_value.empty() ? "Any" : apu_value.c_str();
           {
             ScopedAccentComboStyle accent_combo_style;
-            if (ImGui::BeginCombo("Audio System", apu_preview)) {
-              if (ImGui::Selectable("Any", apu_value == "any")) {
+            if (ImGui::BeginCombo(FrontendText("Audio System"), apu_preview)) {
+              if (ImGui::Selectable(FrontendText("Any"), apu_value == "any")) {
                 c_apu->OverrideConfigValue("any");
                 config::SaveConfig();
               }
 
-              if (ImGui::Selectable("Nop", apu_value == "nop")) {
+              if (ImGui::Selectable(FrontendText("Nop"), apu_value == "nop")) {
                 c_apu->OverrideConfigValue("nop");
                 config::SaveConfig();
               }
 
 #if XE_PLATFORM_WIN32
-              if (ImGui::Selectable("XAudio2", apu_value == "xaudio2")) {
+              if (ImGui::Selectable(FrontendText("XAudio2"), apu_value == "xaudio2")) {
                 c_apu->OverrideConfigValue("xaudio2");
                 config::SaveConfig();
               }
 #endif
 
 #if XE_PLATFORM_LINUX
-              if (ImGui::Selectable("ALSA", apu_value == "alsa")) {
+              if (ImGui::Selectable(FrontendText("ALSA"), apu_value == "alsa")) {
                 c_apu->OverrideConfigValue("alsa");
                 config::SaveConfig();
               }
 #endif
 
 #if !XE_PLATFORM_ANDROID && !XE_PLATFORM_WINRT
-              if (ImGui::Selectable("SDL", apu_value == "sdl")) {
+              if (ImGui::Selectable(FrontendText("SDL"), apu_value == "sdl")) {
                 c_apu->OverrideConfigValue("sdl");
                 config::SaveConfig();
               }
@@ -7921,7 +8140,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c_mute = dynamic_cast<cvar::ConfigVar<bool>*>(
               cvar::ConfigVars->find("mute")->second);
-          if (ImGui::Checkbox("Mute Audio", c_mute->current_value())) {
+          if (ImGui::Checkbox(FrontendText("Mute Audio"), c_mute->current_value())) {
             c_mute->OverrideConfigValue(!(*c_mute->current_value()));
             config::SaveConfig();
           }
@@ -7935,7 +8154,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           auto c_ignore_offset = dynamic_cast<cvar::ConfigVar<bool>*>(
               cvar::ConfigVars->find("ignore_offset_for_ranged_allocations")
                   ->second);
-          if (ImGui::Checkbox("Ignore Offset",
+          if (ImGui::Checkbox(FrontendText("Ignore Offset"),
                               c_ignore_offset->current_value())) {
             c_ignore_offset->OverrideConfigValue(
                 !(*c_ignore_offset->current_value()));
@@ -7948,7 +8167,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c_protect_on_release = dynamic_cast<cvar::ConfigVar<bool>*>(
               cvar::ConfigVars->find("protect_on_release")->second);
-          if (ImGui::Checkbox("Protect On Release",
+          if (ImGui::Checkbox(FrontendText("Protect On Release"),
                               c_protect_on_release->current_value())) {
             c_protect_on_release->OverrideConfigValue(
                 !(*c_protect_on_release->current_value()));
@@ -7961,7 +8180,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c_protect_zero = dynamic_cast<cvar::ConfigVar<bool>*>(
               cvar::ConfigVars->find("protect_zero")->second);
-          if (ImGui::Checkbox("Protect Zero",
+          if (ImGui::Checkbox(FrontendText("Protect Zero"),
                               c_protect_zero->current_value())) {
             c_protect_zero->OverrideConfigValue(
                 !(*c_protect_zero->current_value()));
@@ -7974,7 +8193,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c_scribble_heap = dynamic_cast<cvar::ConfigVar<bool>*>(
               cvar::ConfigVars->find("scribble_heap")->second);
-          if (ImGui::Checkbox("Scribble Heap",
+          if (ImGui::Checkbox(FrontendText("Scribble Heap"),
                               c_scribble_heap->current_value())) {
             c_scribble_heap->OverrideConfigValue(
                 !(*c_scribble_heap->current_value()));
@@ -7989,7 +8208,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
         if (settings_selected_section == 6) {
           auto c_mount_cache = dynamic_cast<cvar::ConfigVar<bool>*>(
               cvar::ConfigVars->find("mount_cache")->second);
-          if (ImGui::Checkbox("Mount Cache", c_mount_cache->current_value())) {
+          if (ImGui::Checkbox(FrontendText("Mount Cache"), c_mount_cache->current_value())) {
             c_mount_cache->OverrideConfigValue(
                 !(*c_mount_cache->current_value()));
             config::SaveConfig();
@@ -8001,7 +8220,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c_mount_scratch = dynamic_cast<cvar::ConfigVar<bool>*>(
               cvar::ConfigVars->find("mount_scratch")->second);
-          if (ImGui::Checkbox("Mount Scratch",
+          if (ImGui::Checkbox(FrontendText("Mount Scratch"),
                               c_mount_scratch->current_value())) {
             c_mount_scratch->OverrideConfigValue(
                 !(*c_mount_scratch->current_value()));
@@ -8014,7 +8233,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c_mount_memory_unit = dynamic_cast<cvar::ConfigVar<bool>*>(
               cvar::ConfigVars->find("mount_memory_unit")->second);
-          if (ImGui::Checkbox("Mount Memory Unit",
+          if (ImGui::Checkbox(FrontendText("Mount Memory Unit"),
                               c_mount_memory_unit->current_value())) {
             c_mount_memory_unit->OverrideConfigValue(
                 !(*c_mount_memory_unit->current_value()));
@@ -8206,7 +8425,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           // classic Xbox 360 theme and every additional theme preset.
           if (auto* enabled =
                   FindConfigVar<bool>("ui_enable_interface_overlay")) {
-            if (ImGui::Checkbox("Show Interface Overlay",
+            if (ImGui::Checkbox(FrontendText("Show Interface Overlay"),
                                 enabled->current_value())) {
               enabled->OverrideConfigValue(!*enabled->current_value());
               config::SaveConfig();
@@ -8215,7 +8434,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           if (auto* opacity =
                   FindConfigVar<double>("ui_interface_overlay_opacity")) {
             float alpha = static_cast<float>(*opacity->current_value());
-            if (ImGui::SliderFloat("Interface Overlay Opacity", &alpha,
+            if (ImGui::SliderFloat(FrontendText("Interface Overlay Opacity"), &alpha,
                                    0.0f, 1.0f, "%.0f%%",
                                    ImGuiSliderFlags_None)) {
               opacity->OverrideConfigValue(
@@ -8285,7 +8504,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             
             {
               ScopedAccentComboStyle accent_combo_style;
-              if (ImGui::BeginCombo("Interface Overlay", preview)) {
+              if (ImGui::BeginCombo(FrontendText("Interface Overlay"), preview)) {
                 for (int i = 0; i < static_cast<int>(available_overlays.size()); ++i) {
                   bool is_selected = (current_overlay_index == i);
                   if (ImGui::Selectable(available_overlays[i].c_str(), is_selected)) {
@@ -8305,7 +8524,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               tooltip = "Select an interface overlay from the Assets/interface_overlays/ folder. PNG files only.";
             }
           } else {
-            ImGui::Text("No interface overlays found in Assets/interface_overlays/");
+            ImGui::Text(FrontendText("No interface overlays found in Assets/interface_overlays/"));
           }
 
           // Guide image selection
@@ -8378,7 +8597,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             
             {
               ScopedAccentComboStyle accent_combo_style;
-              if (ImGui::BeginCombo("Guide Panel Image", preview)) {
+              if (ImGui::BeginCombo(FrontendText("Guide Panel Image"), preview)) {
                 for (int i = 0; i < static_cast<int>(available_guides.size()); ++i) {
                   bool is_selected = (current_guide_index == i);
                   if (ImGui::Selectable(available_guides[i].c_str(), is_selected)) {
@@ -8397,7 +8616,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               tooltip = "Select a guide panel image from the Assets/guide_images/ folder. PNG files only.";
             }
           } else {
-            ImGui::Text("No guide images found in Assets/guide_images/");
+            ImGui::Text(FrontendText("No guide images found in Assets/guide_images/"));
           }
 
           // Background image selection
@@ -8458,7 +8677,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             
             {
               ScopedAccentComboStyle accent_combo_style;
-              if (ImGui::BeginCombo("Background Image", preview)) {
+              if (ImGui::BeginCombo(FrontendText("Background Image"), preview)) {
                 for (int i = 0; i < static_cast<int>(available_backgrounds.size()); ++i) {
                   bool is_selected = (current_background_index == i);
                   if (ImGui::Selectable(available_backgrounds[i].c_str(), is_selected)) {
@@ -8478,7 +8697,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               tooltip = "Select a background image from the Assets/backgrounds/ folder. PNG files only.";
             }
           } else {
-            ImGui::Text("No background images found in Assets/backgrounds/");
+            ImGui::Text(FrontendText("No background images found in Assets/backgrounds/"));
           }
 
           // Custom background image - lets the user pick any image file
@@ -8492,7 +8711,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                                   : "";
 
           if (!custom_background_path.empty()) {
-            ImGui::TextWrapped("Custom background: %s",
+            ImGui::TextWrapped(FrontendText("Custom background: %s"),
                                std::filesystem::path(custom_background_path)
                                    .filename()
                                    .string()
@@ -8521,7 +8740,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           if (!custom_background_path.empty()) {
             ImGui::SameLine();
-            if (ImGui::Button("Clear Custom Background")) {
+            if (ImGui::Button(FrontendText("Clear Custom Background"))) {
               c_custom_background->OverrideConfigValue(std::string());
               config::SaveConfig();
               background_fallback_tex_.reset();
@@ -8534,7 +8753,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           // Dynamic game backgrounds toggle
           auto c_dynamic_bg = dynamic_cast<cvar::ConfigVar<bool>*>(
               cvar::ConfigVars->find("ui_enable_dynamic_game_backgrounds")->second);
-          if (ImGui::Checkbox("Enable Dynamic Game Backgrounds", 
+          if (ImGui::Checkbox(FrontendText("Enable Dynamic Game Backgrounds"), 
                               c_dynamic_bg->current_value())) {
             c_dynamic_bg->OverrideConfigValue(!(*c_dynamic_bg->current_value()));
             config::SaveConfig();
@@ -8546,7 +8765,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           // Hide tabs text toggle
           auto c_hide_tabs = dynamic_cast<cvar::ConfigVar<bool>*>(
               cvar::ConfigVars->find("ui_hide_tabs_text")->second);
-          if (ImGui::Checkbox("Hide Tabs Text", 
+          if (ImGui::Checkbox(FrontendText("Hide Tabs Text"), 
                               c_hide_tabs->current_value())) {
             c_hide_tabs->OverrideConfigValue(!(*c_hide_tabs->current_value()));
             config::SaveConfig();
@@ -8577,7 +8796,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           }
           {
             ScopedAccentComboStyle accent_combo_style;
-            if (ImGui::BeginCombo("UI Accent Color",
+            if (ImGui::BeginCombo(FrontendText("UI Accent Color"),
                                   border_color_labels[current_border_color_index])) {
               for (int i = 0;
                    i < static_cast<int>(sizeof(border_color_values) /
@@ -8620,7 +8839,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           const char* preview = text_effects[current_effect_index];
           {
             ScopedAccentComboStyle accent_combo_style;
-            if (ImGui::BeginCombo("Text Effect", preview)) {
+            if (ImGui::BeginCombo(FrontendText("Text Effect"), preview)) {
               for (int i = 0;
                    i < static_cast<int>(sizeof(text_effects) / sizeof(text_effects[0]));
                    ++i) {
@@ -8649,7 +8868,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           int current_text_color_index = current_text_color == "black" ? 1 : 0;
           {
             ScopedAccentComboStyle accent_combo_style;
-            if (ImGui::BeginCombo("Text Color", text_colors[current_text_color_index])) {
+            if (ImGui::BeginCombo(FrontendText("Text Color"), text_colors[current_text_color_index])) {
               for (int i = 0; i < 2; ++i) {
                 bool is_selected = (current_text_color_index == i);
                 if (ImGui::Selectable(text_colors[i], is_selected)) {
@@ -8674,7 +8893,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                                       ? static_cast<float>(
                                             (*c_text_brightness->current_value()))
                                       : 1.0f;
-          if (ImGui::SliderFloat("Text Brightness", &text_brightness, 0.25f,
+          if (ImGui::SliderFloat(FrontendText("Text Brightness"), &text_brightness, 0.25f,
                                  2.0f, "%.2f")) {
             c_text_brightness->OverrideConfigValue(static_cast<double>(text_brightness));
             config::SaveConfig();
@@ -8689,7 +8908,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                                     ? static_cast<float>(
                                           (*c_text_contrast->current_value()))
                                     : 1.0f;
-          if (ImGui::SliderFloat("Text Contrast", &text_contrast, 0.25f, 2.0f,
+          if (ImGui::SliderFloat(FrontendText("Text Contrast"), &text_contrast, 0.25f, 2.0f,
                                  "%.2f")) {
             c_text_contrast->OverrideConfigValue(static_cast<double>(text_contrast));
             config::SaveConfig();
@@ -8703,7 +8922,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           auto c_host_guest_stacksync = dynamic_cast<cvar::ConfigVar<bool>*>(
               cvar::ConfigVars->find("enable_host_guest_stack_synchronization")
                   ->second);
-          if (ImGui::Checkbox("Enable Host Guest Stack Synchronization",
+          if (ImGui::Checkbox(FrontendText("Enable Host Guest Stack Synchronization"),
                               c_host_guest_stacksync->current_value())) {
             c_host_guest_stacksync->OverrideConfigValue(
                 !(*c_host_guest_stacksync->current_value()));
@@ -8774,9 +8993,9 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             }
             {
               ScopedAccentComboStyle accent_combo_style;
-              if (ImGui::BeginCombo("Internal Display Resolution",
+              if (ImGui::BeginCombo(FrontendText("Internal Display Resolution"),
                                     resolution_preview)) {
-                if (ImGui::Selectable("Default (guest setting)",
+                if (ImGui::Selectable(FrontendText("Default (guest setting)"),
                                       current_x == 0 && current_y == 0)) {
                   c_internal_resolution_x->OverrideConfigValue(0);
                   c_internal_resolution_y->OverrideConfigValue(0);
@@ -8791,7 +9010,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                     config::SaveConfig();
                   }
                 }
-                if (ImGui::Selectable("Custom",
+                if (ImGui::Selectable(FrontendText("Custom"),
                                       resolution_preview[0] == 'C')) {
                   // Leave x/y as-is - the Custom Width/Height fields below
                   // edit them directly. Nudge off (0, 0) so the combo
@@ -8812,7 +9031,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             }
 
             int custom_x = static_cast<int>(current_x);
-            if (ImGui::InputInt("Custom Resolution Width", &custom_x)) {
+            if (ImGui::InputInt(FrontendText("Custom Resolution Width"), &custom_x)) {
               if (custom_x < 1) custom_x = 1;
               if (custom_x > 1920) custom_x = 1920;
               c_internal_resolution_x->OverrideConfigValue(
@@ -8821,7 +9040,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             }
 
             int custom_y = static_cast<int>(current_y);
-            if (ImGui::InputInt("Custom Resolution Height", &custom_y)) {
+            if (ImGui::InputInt(FrontendText("Custom Resolution Height"), &custom_y)) {
               if (custom_y < 1) custom_y = 1;
               if (custom_y > 1080) custom_y = 1080;
               c_internal_resolution_y->OverrideConfigValue(
@@ -8832,7 +9051,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c_widescreen = FindConfigVar<bool>("widescreen");
           if (c_widescreen) {
-            if (ImGui::Checkbox("Widescreen",
+            if (ImGui::Checkbox(FrontendText("Widescreen"),
                                 c_widescreen->current_value())) {
               c_widescreen->OverrideConfigValue(!(*c_widescreen->current_value()));
               config::SaveConfig();
@@ -8845,7 +9064,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c_use_50hz_mode = FindConfigVar<bool>("use_50Hz_mode");
           if (c_use_50hz_mode) {
-            if (ImGui::Checkbox("Use 50Hz Video Mode",
+            if (ImGui::Checkbox(FrontendText("Use 50Hz Video Mode"),
                                 c_use_50hz_mode->current_value())) {
               c_use_50hz_mode->OverrideConfigValue(
                   !(*c_use_50hz_mode->current_value()));
@@ -8859,7 +9078,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c_interlaced = FindConfigVar<bool>("interlaced");
           if (c_interlaced) {
-            if (ImGui::Checkbox("Interlaced Video Mode",
+            if (ImGui::Checkbox(FrontendText("Interlaced Video Mode"),
                                 c_interlaced->current_value())) {
               c_interlaced->OverrideConfigValue(!(*c_interlaced->current_value()));
               config::SaveConfig();
@@ -8888,7 +9107,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           float left_deadzone =
               static_cast<float>((*c_left_deadzone->current_value()));
-          if (ImGui::SliderFloat("Left Stick Deadzone", &left_deadzone, 0.0f,
+          if (ImGui::SliderFloat(FrontendText("Left Stick Deadzone"), &left_deadzone, 0.0f,
                                  1.0f, "%.2f")) {
             c_left_deadzone->OverrideConfigValue(static_cast<double>(left_deadzone));
             config::SaveConfig();
@@ -8900,7 +9119,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           float right_deadzone =
               static_cast<float>((*c_right_deadzone->current_value()));
-          if (ImGui::SliderFloat("Right Stick Deadzone", &right_deadzone, 0.0f,
+          if (ImGui::SliderFloat(FrontendText("Right Stick Deadzone"), &right_deadzone, 0.0f,
                                  1.0f, "%.2f")) {
             c_right_deadzone->OverrideConfigValue(
                 static_cast<double>(right_deadzone));
@@ -8913,7 +9132,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           float left_trigger_deadzone =
               static_cast<float>((*c_left_trigger_deadzone->current_value()));
-          if (ImGui::SliderFloat("Left Trigger Deadzone", &left_trigger_deadzone,
+          if (ImGui::SliderFloat(FrontendText("Left Trigger Deadzone"), &left_trigger_deadzone,
                                  0.0f, 1.0f, "%.2f")) {
             c_left_trigger_deadzone->OverrideConfigValue(
                 static_cast<double>(left_trigger_deadzone));
@@ -8926,7 +9145,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           float right_trigger_deadzone =
               static_cast<float>((*c_right_trigger_deadzone->current_value()));
-          if (ImGui::SliderFloat("Right Trigger Deadzone",
+          if (ImGui::SliderFloat(FrontendText("Right Trigger Deadzone"),
                                  &right_trigger_deadzone, 0.0f, 1.0f,
                                  "%.2f")) {
             c_right_trigger_deadzone->OverrideConfigValue(
@@ -8938,7 +9157,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             tooltip = c_right_trigger_deadzone->description();
           }
 
-          if (ImGui::Checkbox("Controller Vibration",
+          if (ImGui::Checkbox(FrontendText("Controller Vibration"),
                               c_vibration->current_value())) {
             c_vibration->OverrideConfigValue(!(*c_vibration->current_value()));
             config::SaveConfig();
@@ -8950,7 +9169,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c_guide_button = dynamic_cast<cvar::ConfigVar<bool>*>(
               cvar::ConfigVars->find("guide_button")->second);
-          if (ImGui::Checkbox("Forward Guide Button",
+          if (ImGui::Checkbox(FrontendText("Forward Guide Button"),
                               c_guide_button->current_value())) {
             c_guide_button->OverrideConfigValue(
                 !(*c_guide_button->current_value()));
@@ -8971,7 +9190,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                                              sizeof(cl_buffer_));
           }
 
-          if (ImGui::Button("Set CL")) {
+          if (ImGui::Button(FrontendText("Set CL"))) {
             UWP::ShowKeyboard();
             ImGui::SetKeyboardFocusHere();
           }
@@ -8988,7 +9207,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
         }
 
         if (settings_selected_section == 12) {
-          ImGui::TextDisabled("Restart the game after changing GPU/shader options.");
+          ImGui::TextDisabled(FrontendText("Restart the game after changing GPU/shader options."));
           ImGui::TextWrapped("%s", FrontendText("Experimental optimization options"));
           ImGui::Spacing();
           ImGui::TextWrapped("%s", FrontendText(
@@ -9187,7 +9406,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             UWP::RefreshPaths();
             gamelist_focus_requested = true;
           }
-          ImGui::TextDisabled("Games found: %zu", UWP::GetGames().size());
+          ImGui::TextDisabled(FrontendText("Games found: %zu"), UWP::GetGames().size());
 
           // Direct boot also works when the game library scan has no entries.
           // Reuse the same WinRT file picker that other UWP actions use;
@@ -9211,7 +9430,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             });
           }
           ImGui::TextDisabled(
-              "Choose an Xbox 360 ISO, default.xex or content package."
+              FrontendText("Choose an Xbox 360 ISO, default.xex or content package.")
               " Files must be accessible to the app.");
 
           auto ccache_root =
@@ -9255,7 +9474,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           ImGui::SameLine();
 
           ImGui::TextWrapped(
-              "Remember to configure your USB filesystem so its paths work ");
+              FrontendText("Remember to configure your USB filesystem so its paths work "));
 
           if (show_path_warning_) {
             ImGui::OpenPopup("Warning");
@@ -9266,7 +9485,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           if (ImGui::BeginPopupModal("Warning")) {
             ImGui::TextWrapped(
-                "The selected folder cannot be accessed as requested. "
+                FrontendText("The selected folder cannot be accessed as requested. ")
                 "Game folders only need read access; cache/config folders "
                 "must allow writing.");
             ImGui::Separator();
@@ -9378,7 +9597,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           ImGui::Spacing();
           ImGui::TextWrapped(
-              "This UWP Xbox Port was originally made by SirMangler and the "
+              FrontendText("This UWP Xbox Port was originally made by SirMangler and the ")
               "hardwork of all the Xenia Project contributers over the years\n");
 
           ImGui::EndChild();
@@ -9459,7 +9678,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                                  26.0f * uy,
                                  ImVec2(150.0f * ux, 18.0f * uy),
                                  IM_COL32(228, 228, 228, 255),
-                                 overlay_header_text);
+                                 FrontendText(overlay_header_text));
     constexpr float kRotateClockwise90 = -3.14159265f * 0.5f;
     constexpr float kRotateCounterClockwise90 = 3.14159265f * 0.5f;
 
@@ -9489,23 +9708,23 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
     if (!hide_tabs_text) {
       for (int i = 0; i < 4; ++i) {
         int slot_index = (active_index + i) % 4;
-        draw_rotated_text(tab_labels[slot_index], slots[i].pos, slots[i].font_size,
+        draw_rotated_text(FrontendText(tab_labels[slot_index]), slots[i].pos, slots[i].font_size,
                           IM_COL32(0, 0, 0, 255), slots[i].rotation);
       }
     }
     const float footer_text_size = 13.5f * uy;
     const float footer_icon_size = 15.6f * uy;
     xe::app::DrawFooterPrompt(frontend_draw_list, GetOrCreateButtonTexture('Y'),
-                              footer_text_size, footer_icon_size, "Search",
+                              footer_text_size, footer_icon_size, FrontendText("Search"),
                               526.0f * uy, 178.0f * ux, -13.0f * ux);
     xe::app::DrawFooterPrompt(frontend_draw_list, GetOrCreateButtonTexture('X'),
-                              footer_text_size, footer_icon_size, "Game Menu",
+                              footer_text_size, footer_icon_size, FrontendText("Game Menu"),
                               543.0f * uy, 165.0f * ux, -17.0f * ux);
     xe::app::DrawFooterPrompt(frontend_draw_list, GetOrCreateButtonTexture('B'),
-                              footer_text_size, footer_icon_size, "Back",
+                              footer_text_size, footer_icon_size, FrontendText("Back"),
                               526.0f * uy, 816.0f * ux, 35.0f * ux);
     xe::app::DrawFooterPrompt(frontend_draw_list, GetOrCreateButtonTexture('A'),
-                              footer_text_size, footer_icon_size, "Select",
+                              footer_text_size, footer_icon_size, FrontendText("Select"),
                               543.0f * uy, 825.0f * ux, 42.0f * ux);
     if (auto logo = GetOrCreateXeniaLogo()) {
       const float logo_aspect = logo->height > 0
