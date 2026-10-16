@@ -8893,6 +8893,31 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           }
           ImGui::TextDisabled("Games found: %zu", UWP::GetGames().size());
 
+          // Direct boot also works when the game library scan has no entries.
+          // Reuse the same WinRT file picker that other UWP actions use;
+          // the selected path is passed to Xenia's normal launch routine.
+          if (draw_text_button("##boot_game_file_button",
+                               "Boot Game (ISO / XEX / File)")) {
+            imgui_drawer()->SetIgnoreInput(true);
+            UWP::SelectFile([this](std::string file_path) {
+              imgui_drawer()->SetIgnoreInput(false);
+              if (file_path.empty()) {
+                return;  // File picker cancelled.
+              }
+              XELOGI("UWP: direct boot requested for '{}'", file_path);
+              // Windows paths returned by the picker are UTF-8.
+              // Convert explicitly rather than using the ANSI code page.
+              const auto result = emulator_window_.RunTitle(
+                  xe::to_path(file_path));
+              if (result == X_STATUS_SUCCESS) {
+                Close();
+              }
+            });
+          }
+          ImGui::TextDisabled(
+              "Choose an Xbox 360 ISO, default.xex or content package."
+              " Files must be accessible to the app.");
+
           auto ccache_root =
               dynamic_cast<cvar::ConfigVar<std::filesystem::path>*>(
                   cvar::ConfigVars->find("cache_root")->second);
@@ -8945,9 +8970,9 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           if (ImGui::BeginPopupModal("Warning")) {
             ImGui::TextWrapped(
-                "The folder path you have selected is not writable! Please check "
-                "that you have the correct permissions for the folder you have "
-                "selected.");
+                "The selected folder cannot be accessed as requested. "
+                "Game folders only need read access; cache/config folders "
+                "must allow writing.");
             ImGui::Separator();
             if (draw_text_button("##path_warning_ok_button", "OK")) {
               ImGui::CloseCurrentPopup();
