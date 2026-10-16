@@ -72,7 +72,9 @@ jobs:
       - name: Restore incremental CMake and MSVC build cache
         uses: actions/cache@v4
         with:
-          path: build
+          path: |
+            build
+            xenia-canary-uwp/x64/Release
           key: ${{ runner.os }}-xenia-uwp-msvc-v2-${{ hashFiles('CMakeLists.txt', '.gitmodules') }}-${{ github.sha }}
           restore-keys: |
             ${{ runner.os }}-xenia-uwp-msvc-v2-${{ hashFiles('CMakeLists.txt', '.gitmodules') }}-
