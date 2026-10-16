@@ -53,7 +53,13 @@ jobs:
           $vs = & "${env:ProgramFiles(x86)}\\Microsoft Visual Studio\\Installer\\vswhere.exe" -latest -products '*' -property installationPath
           if (-not $vs) { throw 'Visual Studio installation was not found' }
           Write-Host "Using Visual Studio: $vs"
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 2>&1 | Tee-Object -FilePath configure-uwp.log
+          # All static libraries and the separate UWP project must include
+          # C++/WinRT from the exact same Windows SDK. Mismatching 26100 and
+          # 22621 results in LNK2038 / LNK1319.
+          $sdk = '10.0.26100.0'
+          $sdkHeaders = "${env:ProgramFiles(x86)}\\Windows Kits\\10\\Include\\$sdk\\cppwinrt\\winrt\\base.h"
+          if (-not (Test-Path $sdkHeaders)) { throw "Windows SDK C++/WinRT headers missing: $sdkHeaders" }
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 "-DCMAKE_SYSTEM_VERSION=$sdk" 2>&1 | Tee-Object -FilePath configure-uwp.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       # include_external_msproject() does not reliably build its CMake
       # add_dependencies in Visual Studio generators when called as a target.
