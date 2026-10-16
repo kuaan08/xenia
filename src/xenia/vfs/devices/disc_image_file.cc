@@ -11,6 +11,7 @@
 
 #include "xenia/base/logging.h"
 #include "xenia/vfs/devices/disc_image_entry.h"
+#include "xenia/vfs/devices/disc_image_device.h"
 namespace xe {
 namespace vfs {
 
@@ -27,16 +28,45 @@ X_STATUS DiscImageFile::ReadSync(std::span<uint8_t> buffer, size_t byte_offset,
     return X_STATUS_END_OF_FILE;
   }
 
-  auto mmap = entry_->mmap();
+  const size_t real_length =
+      std::min(buffer.size(), entry_->data_size() - byte_offset);
+  if (!real_length) {
+    if (out_bytes_read) {
+      *out_bytes_read = 0;
+    }
+    return X_STATUS_SUCCESS;
+  }
+
+  const size_t real_offset = entry_->data_offset() + byte_offset;
+#if XE_PLATFORM_WINRT
+  // UWP opens disc images as FileHandle streams rather than memory mappings.
+  // Reading from entry_->mmap() here always returns EOF on Xbox, even when
+  // the ISO filesystem and default.xex were successfully discovered.
+  auto* device = static_cast<DiscImageDevice*>(entry_->device());
+  size_t bytes_read = 0;
+  if (!device->ReadImageData(real_offset, buffer.data(), real_length,
+                             &bytes_read) ||
+      bytes_read != real_length) {
+    XELOGE("XISO: failed reading '{}' at offset {} ({} of {} bytes)",
+           entry_->name(), real_offset, bytes_read, real_length);
+    if (out_bytes_read) {
+      *out_bytes_read = bytes_read;
+    }
+    return X_STATUS_UNSUCCESSFUL;
+  }
+  if (out_bytes_read) {
+    *out_bytes_read = bytes_read;
+  }
+#else
+  auto* mmap = entry_->mmap();
   if (!mmap) {
     return X_STATUS_END_OF_FILE;
   }
-
-  size_t real_offset = entry_->data_offset() + byte_offset;
-  size_t real_length =
-      std::min(buffer.size(), entry_->data_size() - byte_offset);
   std::memcpy(buffer.data(), mmap->data() + real_offset, real_length);
-  *out_bytes_read = real_length;
+  if (out_bytes_read) {
+    *out_bytes_read = real_length;
+  }
+#endif
   return X_STATUS_SUCCESS;
 }
 
