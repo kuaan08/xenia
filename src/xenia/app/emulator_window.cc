@@ -342,6 +342,16 @@ const char* FrontendText(const char* english) {
       {"Cancel", "Cancelar"},
       {"Browse", "Procurar"},
       {"No Profiles Found", "Nenhum perfil encontrado"},
+      {"Create", "Criar"},
+      {"Gamertag:", "Nome de jogador:"},
+      {"Login to slot:", "Entrar no slot:"},
+      {"Last played: Unknown", "Última vez: desconhecida"},
+      {"Green (#61C032)", "Verde (#61C032)"},
+      {"shadow", "sombra"}, {"lift", "relevo"},
+      {"stroke_fill", "contorno preenchido"}, {"glow", "brilho"},
+      {"outline", "contorno"}, {"double_shadow", "sombra dupla"},
+      {"bold", "negrito"}, {"none", "nenhum"},
+      {"white", "branco"}, {"black", "preto"},
       {"Create Profile", "Criar perfil"},
       {"Create profile & migrate data", "Criar perfil e migrar dados"},
       {"Open profile menu", "Abrir menu de perfis"},
@@ -8421,6 +8431,9 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               "Toggle user ratings in the Games tab detail pane."
           );
 
+          ImGui::TextDisabled("%s", FrontendText(
+              "All themes support background and Blades overlays."));
+
           // Both settings apply to the SAME overlay renderer used by the
           // classic Xbox 360 theme and every additional theme preset.
           if (auto* enabled =
@@ -8433,12 +8446,12 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           }
           if (auto* opacity =
                   FindConfigVar<double>("ui_interface_overlay_opacity")) {
-            float alpha = static_cast<float>(*opacity->current_value());
-            if (ImGui::SliderFloat(FrontendText("Interface Overlay Opacity"), &alpha,
-                                   0.0f, 1.0f, "%.0f%%",
-                                   ImGuiSliderFlags_None)) {
-              opacity->OverrideConfigValue(
-                  std::clamp(static_cast<double>(alpha), 0.0, 1.0));
+            float opacity_percent =
+                static_cast<float>(*opacity->current_value() * 100.0);
+            if (ImGui::SliderFloat(FrontendText("Interface Overlay Opacity"),
+                                   &opacity_percent, 0.0f, 100.0f, "%.0f%%")) {
+              opacity->OverrideConfigValue(std::clamp(
+                  static_cast<double>(opacity_percent / 100.0f), 0.0, 1.0));
               config::SaveConfig();
             }
             if (ImGui::IsItemHovered()) {
@@ -8797,13 +8810,13 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           {
             ScopedAccentComboStyle accent_combo_style;
             if (ImGui::BeginCombo(FrontendText("UI Accent Color"),
-                                  border_color_labels[current_border_color_index])) {
+                                  FrontendText(border_color_labels[current_border_color_index]))) {
               for (int i = 0;
                    i < static_cast<int>(sizeof(border_color_values) /
                                         sizeof(border_color_values[0]));
                    ++i) {
                 bool is_selected = current_border_color_index == i;
-                if (ImGui::Selectable(border_color_labels[i], is_selected)) {
+                if (ImGui::Selectable(FrontendText(border_color_labels[i]), is_selected)) {
                   current_border_color_index = i;
                   c_border_color->OverrideConfigValue(border_color_values[i]);
                   config::SaveConfig();
@@ -8836,7 +8849,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             }
           }
           
-          const char* preview = text_effects[current_effect_index];
+          const char* preview = FrontendText(text_effects[current_effect_index]);
           {
             ScopedAccentComboStyle accent_combo_style;
             if (ImGui::BeginCombo(FrontendText("Text Effect"), preview)) {
@@ -8844,7 +8857,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                    i < static_cast<int>(sizeof(text_effects) / sizeof(text_effects[0]));
                    ++i) {
                 bool is_selected = (current_effect_index == i);
-                if (ImGui::Selectable(text_effects[i], is_selected)) {
+                if (ImGui::Selectable(FrontendText(text_effects[i]), is_selected)) {
                   current_effect_index = i;
                   c_text_effect->OverrideConfigValue(text_effects[i]);
                   config::SaveConfig();
@@ -8868,10 +8881,10 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           int current_text_color_index = current_text_color == "black" ? 1 : 0;
           {
             ScopedAccentComboStyle accent_combo_style;
-            if (ImGui::BeginCombo(FrontendText("Text Color"), text_colors[current_text_color_index])) {
+            if (ImGui::BeginCombo(FrontendText("Text Color"), FrontendText(text_colors[current_text_color_index]))) {
               for (int i = 0; i < 2; ++i) {
                 bool is_selected = (current_text_color_index == i);
-                if (ImGui::Selectable(text_colors[i], is_selected)) {
+                if (ImGui::Selectable(FrontendText(text_colors[i]), is_selected)) {
                   current_text_color_index = i;
                   c_text_color->OverrideConfigValue(text_colors[i]);
                   config::SaveConfig();
