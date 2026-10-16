@@ -68,6 +68,7 @@ class CommandVar : virtual public ICommandVar {
   void LoadFromLaunchOptions(cxxopts::ParseResult* result) override;
   void SetCommandLineValue(T val);
   T* current_value() { return current_value_; }
+  const T* current_value() const { return current_value_; }
 
  protected:
   std::string name_;
