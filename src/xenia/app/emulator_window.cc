@@ -148,6 +148,11 @@ DEFINE_bool(ui_show_user_rating_metadata, true,
 DEFINE_string(ui_interface_overlay_image, "blades.png",
               "Interface overlay image to display in the frontend. Must be a PNG file in Assets/interface_overlays/.",
               "UI");
+DEFINE_bool(ui_enable_interface_overlay, true,
+            "Draw the Xbox 360 Blades interface overlay on every theme.", "UI");
+DEFINE_double(ui_interface_overlay_opacity, 1.0,
+              "Opacity of the Xbox 360 interface overlay, from 0.0 to 1.0.",
+              "UI");
 
 DEFINE_string(ui_language, "en",
               "Frontend language: en, pt-BR, es, fr, de, it. Independent of guest language.", "UI");
@@ -3027,27 +3032,26 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
     // Channel 2: Interface overlay (top layer)
     // Channel 3: UI elements
     
-    // Flat dark themes skip background textures and overlay artwork,
-    // reducing frontend texture uploads without affecting game rendering.
+    // All themes use the full Xbox 360 Blades composition (background,
+    // per-blade tint, overlay PNG, guide textures and rails). Dark themes
+    // adjust the tint only; they never remove the chosen overlay/background.
     const auto* theme_cvar = FindConfigVar<std::string>("ui_theme_preset");
-    const std::string theme = theme_cvar ? theme_cvar->GetTypedConfigValue()
+    const std::string theme = theme_cvar ? *theme_cvar->current_value()
                                         : "classic";
-    const bool flat_dark = theme == "amoled" || theme == "minimal";
     frontend_splitter.SetCurrentChannel(frontend_draw_list, 0);
-    if (flat_dark) {
-      frontend_draw_list->AddRectFilled(
-          ImVec2(0.0f, 0.0f), io.DisplaySize,
-          theme == "amoled" ? IM_COL32(0, 0, 0, 255)
-                           : IM_COL32(22, 26, 30, 255));
-    }
-    if (auto fallback_tex = flat_dark
-                                ? std::shared_ptr<ui::ImmediateTexture>()
-                                : GetOrCreateBackgroundFallback()) {
+    if (auto fallback_tex = GetOrCreateBackgroundFallback()) {
       frontend_draw_list->PushClipRectFullScreen();
       frontend_draw_list->AddImage(
           reinterpret_cast<ImTextureID>(fallback_tex.get()), ImVec2(0, 0),
           io.DisplaySize);
       frontend_draw_list->PopClipRect();
+    }
+    // Keep the same background image for AMOLED and Minimal, but darken it.
+    // The interface overlay is rendered separately *above* this tint.
+    if (theme == "amoled" || theme == "minimal") {
+      const int opacity = theme == "amoled" ? 155 : 100;
+      frontend_draw_list->AddRectFilled(
+          ImVec2(0, 0), io.DisplaySize, IM_COL32(0, 0, 0, opacity));
     }
 
     // Tint the panel background with a color unique to the active blade -
@@ -3072,26 +3076,44 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           std::clamp(seconds_since_switch / kBladeTintFadeInSeconds, 0.0f,
                     1.0f);
       ImU32 tint = kBladeTintColors[static_cast<int>(active_frontend_page_)];
-      uint8_t tint_alpha =
-          static_cast<uint8_t>(kBladeTintMaxAlpha * tint_fade);
+      // Theme presets alter only their tint. Classic remains exactly the
+      // original per-blade palette and keeps the same overlay capabilities.
+      if (theme == "xbox_green") tint = IM_COL32(20, 142, 33, 255);
+      else if (theme == "blue") tint = IM_COL32(25, 80, 180, 255);
+      else if (theme == "purple") tint = IM_COL32(118, 43, 160, 255);
+      else if (theme == "amoled") tint = IM_COL32(8, 44, 17, 255);
+      else if (theme == "minimal") tint = IM_COL32(44, 48, 54, 255);
+      const uint8_t tint_alpha = static_cast<uint8_t>(
+          (theme == "amoled" || theme == "minimal" ? 115.0f
+                                                   : kBladeTintMaxAlpha)
+          * tint_fade);
       tint = (tint & 0x00FFFFFFu) | (static_cast<ImU32>(tint_alpha) << 24);
       frontend_draw_list->PushClipRectFullScreen();
-      if (!flat_dark) {
-        frontend_draw_list->AddRectFilled(ImVec2(0, 0), io.DisplaySize, tint);
-      }
+      frontend_draw_list->AddRectFilled(ImVec2(0, 0), io.DisplaySize, tint);
       frontend_draw_list->PopClipRect();
     }
 
-    // Draw interface overlay on top if available (top layer)
+    // The Blades overlay (including user-selected PNG files) is supported
+    // identically by EVERY theme. Visibility and opacity are independent
+    // controls, not implicit side effects of choosing a theme.
     frontend_splitter.SetCurrentChannel(frontend_draw_list, 2);
-    if (auto background_tex = flat_dark
-                                  ? std::shared_ptr<ui::ImmediateTexture>()
-                                  : GetOrCreateBackground()) {
-      frontend_draw_list->PushClipRectFullScreen();
-      frontend_draw_list->AddImage(
-          reinterpret_cast<ImTextureID>(background_tex.get()), ImVec2(0, 0),
-          io.DisplaySize);
-      frontend_draw_list->PopClipRect();
+    const auto* overlay_enabled =
+        FindConfigVar<bool>("ui_enable_interface_overlay");
+    const auto* overlay_opacity =
+        FindConfigVar<double>("ui_interface_overlay_opacity");
+    if (!overlay_enabled || *overlay_enabled->current_value()) {
+      if (auto background_tex = GetOrCreateBackground()) {
+        const float alpha = static_cast<float>(std::clamp(
+            overlay_opacity ? *overlay_opacity->current_value() : 1.0,
+            0.0, 1.0));
+        frontend_draw_list->PushClipRectFullScreen();
+        frontend_draw_list->AddImage(
+            reinterpret_cast<ImTextureID>(background_tex.get()),
+            ImVec2(0, 0), io.DisplaySize, ImVec2(0, 0), ImVec2(1, 1),
+            IM_COL32(255, 255, 255,
+                     static_cast<int>(alpha * 255.0f)));
+        frontend_draw_list->PopClipRect();
+      }
     }
     
     frontend_splitter.SetCurrentChannel(frontend_draw_list, 3);
@@ -8005,8 +8027,8 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
         }
 
         if (settings_selected_section == 7) {
-          // Themes are saved presets for existing renderer-aware UI cvars.
-          // Flat themes also omit the background and overlay textures above.
+          // Theme presets retain the original Blades overlay picker, custom
+          // PNGs, backgrounds and guide UI rather than replacing them.
           auto* c_theme = FindConfigVar<std::string>("ui_theme_preset");
           if (c_theme) {
             struct ThemeOption {
@@ -8179,6 +8201,31 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                   cvar::ConfigVars->find("ui_show_user_rating_metadata")->second),
               "Toggle user ratings in the Games tab detail pane."
           );
+
+          // Both settings apply to the SAME overlay renderer used by the
+          // classic Xbox 360 theme and every additional theme preset.
+          if (auto* enabled =
+                  FindConfigVar<bool>("ui_enable_interface_overlay")) {
+            if (ImGui::Checkbox("Show Interface Overlay",
+                                enabled->current_value())) {
+              enabled->OverrideConfigValue(!*enabled->current_value());
+              config::SaveConfig();
+            }
+          }
+          if (auto* opacity =
+                  FindConfigVar<double>("ui_interface_overlay_opacity")) {
+            float alpha = static_cast<float>(*opacity->current_value());
+            if (ImGui::SliderFloat("Interface Overlay Opacity", &alpha,
+                                   0.0f, 1.0f, "%.0f%%",
+                                   ImGuiSliderFlags_None)) {
+              opacity->OverrideConfigValue(
+                  std::clamp(static_cast<double>(alpha), 0.0, 1.0));
+              config::SaveConfig();
+            }
+            if (ImGui::IsItemHovered()) {
+              tooltip = "Opacity of your chosen Blades overlay PNG in all themes.";
+            }
+          }
 
           // Interface overlay selection
           auto c_overlay = dynamic_cast<cvar::ConfigVar<std::string>*>(
