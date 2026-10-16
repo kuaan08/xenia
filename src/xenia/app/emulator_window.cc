@@ -23,6 +23,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "third_party/fmt/include/fmt/format.h"
@@ -147,6 +148,11 @@ DEFINE_bool(ui_show_user_rating_metadata, true,
 DEFINE_string(ui_interface_overlay_image, "blades.png",
               "Interface overlay image to display in the frontend. Must be a PNG file in Assets/interface_overlays/.",
               "UI");
+
+DEFINE_string(ui_language, "en",
+              "Frontend language: en, pt-BR, es, fr, de, it. Independent of guest language.", "UI");
+DEFINE_string(ui_theme_preset, "classic",
+              "Frontend theme: classic, xbox_green, blue, purple, amoled, minimal.", "UI");
 
 DEFINE_string(ui_background_image, "xenia.png",
               "Background image to display in the frontend when no overlay is present. Must be a PNG file in Assets/backgrounds/.",
@@ -293,6 +299,75 @@ static cvar::ConfigVar<T>* FindConfigVar(const char* name) {
   return it != cvar::ConfigVars->end()
              ? dynamic_cast<cvar::ConfigVar<T>*>(it->second)
              : nullptr;
+}
+
+// The interface language does not change the Xbox 360 guest system language.
+// Unknown strings intentionally fall back to English while more panels are
+// localized. Keys remain the original English UI captions.
+static const char* FrontendText(const char* english) {
+  const auto* var = FindConfigVar<std::string>("ui_language");
+  const std::string code = var ? var->GetTypedConfigValue() : "en";
+  int language = -1;
+  if (code == "pt-BR") language = 0;
+  else if (code == "es") language = 1;
+  else if (code == "fr") language = 2;
+  else if (code == "de") language = 3;
+  else if (code == "it") language = 4;
+  if (language == -1) return english;
+
+  struct Translation {
+    const char* english;
+    const char* localized[5];
+  };
+  static const Translation translations[] = {
+      {"Select a Game", {"Selecionar jogo", "Seleccionar juego", "Choisir un jeu", "Spiel auswählen", "Seleziona gioco"}},
+      {"Make some Tweaks", {"Configurações", "Configuración", "Paramètres", "Einstellungen", "Impostazioni"}},
+      {"Choose your Path", {"Escolher pastas", "Elegir carpetas", "Choisir les dossiers", "Ordner auswählen", "Scegli cartelle"}},
+      {"Get the Info", {"Informações", "Información", "Informations", "Informationen", "Informazioni"}},
+      {"Available settings", {"Configurações disponíveis", "Ajustes disponibles", "Paramètres disponibles", "Verfügbare Einstellungen", "Impostazioni disponibili"}},
+      {"General", {"Geral", "General", "Général", "Allgemein", "Generale"}},
+      {"D3D12", {"D3D12", "D3D12", "D3D12", "D3D12", "D3D12"}},
+      {"Display", {"Tela", "Pantalla", "Affichage", "Anzeige", "Schermo"}},
+      {"GPU", {"GPU", "GPU", "GPU", "GPU", "GPU"}},
+      {"Audio", {"Áudio", "Audio", "Audio", "Audio", "Audio"}},
+      {"Memory", {"Memória", "Memoria", "Mémoire", "Speicher", "Memoria"}},
+      {"Storage", {"Armazenamento", "Almacenamiento", "Stockage", "Speicherplatz", "Archiviazione"}},
+      {"UI", {"Interface", "Interfaz", "Interface", "Oberfläche", "Interfaccia"}},
+      {"x64", {"x64", "x64", "x64", "x64", "x64"}},
+      {"Video", {"Vídeo", "Vídeo", "Vidéo", "Video", "Video"}},
+      {"HID", {"Controle", "Control", "Manette", "Controller", "Controller"}},
+      {"Command Line", {"Linha de comando", "Línea de comandos", "Ligne de commande", "Befehlszeile", "Riga di comando"}},
+      {"Experimental", {"Experimental", "Experimental", "Expérimental", "Experimentell", "Sperimentale"}},
+      {"Interface Language", {"Idioma da interface", "Idioma de la interfaz", "Langue de l'interface", "Sprache der Oberfläche", "Lingua interfaccia"}},
+      {"Game Language", {"Idioma dos jogos", "Idioma de los juegos", "Langue des jeux", "Spielsprache", "Lingua giochi"}},
+      {"Apply Patches", {"Aplicar patches", "Aplicar parches", "Appliquer les correctifs", "Patches anwenden", "Applica patch"}},
+      {"Controller Hotkeys", {"Atalhos do controle", "Atajos del mando", "Raccourcis manette", "Controller-Tastenkürzel", "Scorciatoie controller"}},
+      {"Theme Preset", {"Tema da interface", "Tema de interfaz", "Thème de l'interface", "Oberflächendesign", "Tema interfaccia"}},
+      {"Xbox 360 Classic", {"Xbox 360 clássico", "Xbox 360 clásico", "Xbox 360 classique", "Xbox 360 Klassisch", "Xbox 360 classico"}},
+      {"Xbox Green", {"Xbox verde", "Xbox verde", "Xbox vert", "Xbox Grün", "Xbox verde"}},
+      {"Xbox Blue", {"Xbox azul", "Xbox azul", "Xbox bleu", "Xbox Blau", "Xbox blu"}},
+      {"Xbox Purple", {"Xbox roxo", "Xbox morado", "Xbox violet", "Xbox Violett", "Xbox viola"}},
+      {"AMOLED Dark", {"AMOLED escuro", "AMOLED oscuro", "AMOLED sombre", "AMOLED Dunkel", "AMOLED scuro"}},
+      {"Minimal Dark", {"Minimalista escuro", "Minimalista oscuro", "Minimal sombre", "Minimal Dunkel", "Minimal scuro"}},
+      {"Experimental optimization options", {"Opções experimentais de otimização", "Opciones experimentales de optimización", "Optimisations expérimentales", "Experimentelle Optimierungen", "Ottimizzazioni sperimentali"}},
+      {"These options may reduce performance or break graphics. Restart the game after changes.", {"Essas opções podem piorar o desempenho ou causar falhas gráficas. Reinicie o jogo após alterar.", "Estas opciones pueden empeorar el rendimiento o los gráficos. Reinicia el juego.", "Ces options peuvent réduire les performances ou provoquer des défauts. Redémarrez le jeu.", "Diese Optionen können Leistung oder Grafik beeinträchtigen. Spiel neu starten.", "Queste opzioni possono peggiorare prestazioni o grafica. Riavvia il gioco."}},
+      {"Asynchronous shaders", {"Shaders assíncronos", "Shaders asíncronos", "Shaders asynchrones", "Asynchrone Shader", "Shader asincroni"}},
+      {"D3D12 bindless resources", {"Recursos bindless D3D12", "Recursos bindless D3D12", "Ressources bindless D3D12", "D3D12-Bindless-Ressourcen", "Risorse bindless D3D12"}},
+      {"Early D3D12 submission", {"Envio antecipado D3D12", "Envío anticipado D3D12", "Soumission D3D12 anticipée", "Frühe D3D12-Übermittlung", "Invio D3D12 anticipato"}},
+      {"D3D12 page state tracking", {"Rastreamento de páginas D3D12", "Seguimiento de páginas D3D12", "Suivi des pages D3D12", "D3D12-Seitenzustände", "Tracciamento pagine D3D12"}},
+      {"Favor FPS: disable extra post-processing", {"Priorizar FPS: desativar pós-processamento", "Priorizar FPS: desactivar posprocesado", "Privilégier les FPS : réduire les effets", "FPS priorisieren: Effekte deaktivieren", "Preferisci FPS: disattiva gli effetti"}},
+      {"Restore experimental defaults", {"Restaurar padrões experimentais", "Restaurar valores experimentales", "Rétablir les valeurs expérimentales", "Experimentelle Standards wiederherstellen", "Ripristina valori sperimentali"}},
+      {"No optimization guarantees; test each title separately.", {"Sem garantia de mais FPS; teste cada jogo separadamente.", "Sin garantías de FPS; prueba cada juego por separado.", "Aucun gain FPS garanti; testez chaque jeu.", "Kein FPS-Gewinn garantiert; Spiele einzeln testen.", "FPS non garantiti; prova ogni gioco."}},
+      {"Rescan Games", {"Atualizar jogos", "Actualizar juegos", "Actualiser les jeux", "Spiele neu laden", "Aggiorna giochi"}},
+      {"Boot Game (ISO / XEX / File)", {"Iniciar jogo (ISO / XEX / arquivo)", "Iniciar juego (ISO / XEX / archivo)", "Lancer un jeu (ISO / XEX / fichier)", "Spiel starten (ISO / XEX / Datei)", "Avvia gioco (ISO / XEX / file)"}},
+      {"Set Config Folders Path", {"Definir pastas de configuração", "Elegir carpetas de configuración", "Définir les dossiers de configuration", "Konfigurationsordner wählen", "Imposta cartelle configurazione"}},
+  };
+  for (const auto& t : translations) {
+    if (std::strcmp(t.english, english) == 0) {
+      return t.localized[language];
+    }
+  }
+  return english;
 }
 
 namespace {
@@ -2948,9 +3023,22 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
     // Channel 2: Interface overlay (top layer)
     // Channel 3: UI elements
     
-    // Always draw background as base layer (bottom layer)
+    // Flat dark themes skip background textures and overlay artwork,
+    // reducing frontend texture uploads without affecting game rendering.
+    const auto* theme_cvar = FindConfigVar<std::string>("ui_theme_preset");
+    const std::string theme = theme_cvar ? theme_cvar->GetTypedConfigValue()
+                                        : "classic";
+    const bool flat_dark = theme == "amoled" || theme == "minimal";
     frontend_splitter.SetCurrentChannel(frontend_draw_list, 0);
-    if (auto fallback_tex = GetOrCreateBackgroundFallback()) {
+    if (flat_dark) {
+      frontend_draw_list->AddRectFilled(
+          ImVec2(0.0f, 0.0f), io.DisplaySize,
+          theme == "amoled" ? IM_COL32(0, 0, 0, 255)
+                           : IM_COL32(22, 26, 30, 255));
+    }
+    if (auto fallback_tex = flat_dark
+                                ? std::shared_ptr<ui::ImmediateTexture>()
+                                : GetOrCreateBackgroundFallback()) {
       frontend_draw_list->PushClipRectFullScreen();
       frontend_draw_list->AddImage(
           reinterpret_cast<ImTextureID>(fallback_tex.get()), ImVec2(0, 0),
@@ -2984,13 +3072,17 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           static_cast<uint8_t>(kBladeTintMaxAlpha * tint_fade);
       tint = (tint & 0x00FFFFFFu) | (static_cast<ImU32>(tint_alpha) << 24);
       frontend_draw_list->PushClipRectFullScreen();
-      frontend_draw_list->AddRectFilled(ImVec2(0, 0), io.DisplaySize, tint);
+      if (!flat_dark) {
+        frontend_draw_list->AddRectFilled(ImVec2(0, 0), io.DisplaySize, tint);
+      }
       frontend_draw_list->PopClipRect();
     }
 
     // Draw interface overlay on top if available (top layer)
     frontend_splitter.SetCurrentChannel(frontend_draw_list, 2);
-    if (auto background_tex = GetOrCreateBackground()) {
+    if (auto background_tex = flat_dark
+                                  ? std::shared_ptr<ui::ImmediateTexture>()
+                                  : GetOrCreateBackground()) {
       frontend_draw_list->PushClipRectFullScreen();
       frontend_draw_list->AddImage(
           reinterpret_cast<ImTextureID>(background_tex.get()), ImVec2(0, 0),
@@ -3184,6 +3276,8 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           header_text = "Select a Game";
           break;
       }
+
+      header_text = FrontendText(header_text);
 
       auto parse_title_id_from_filename = [](const std::string& name) {
         if (name.size() < 8) {
@@ -6647,6 +6741,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
             "General",      "D3D12", "Display", "GPU",
             "Audio",        "Memory", "Storage", "UI",
             "x64",          "Video", "HID", "Command Line",
+            "Experimental",
         };
 
         if (!ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) &&
@@ -6696,7 +6791,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                                     ImGuiTableColumnFlags_WidthStretch, 1.0f);
 
             ImGui::TableNextColumn();
-            ImGui::TextWrapped("Available settings");
+            ImGui::TextWrapped("%s", FrontendText("Available settings"));
             bool settings_list_has_focus = false;
             bool settings_left_focus_detected = false;
             const bool disable_left_nav = settings_focus_on_right;
@@ -6762,7 +6857,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               DrawTextWithConfiguredEffect(
                   settings_draw_list, ImGui::GetFont(), ImGui::GetFontSize(),
                   text_pos, ImGui::GetColorU32(ImGuiCol_Text),
-                  k_settings_sections[i]);
+                  FrontendText(k_settings_sections[i]));
               const bool entry_focused = ImGui::IsItemFocused();
               ImGui::PopID();
               ImGui::Dummy(ImVec2(0.0f, 6.0f * display_scale));
@@ -6827,7 +6922,9 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
         if (settings_selected_section == 0) {
           auto c_apply_patches = dynamic_cast<cvar::ConfigVar<bool>*>(
               cvar::ConfigVars->find("apply_patches")->second);
-          if (ImGui::Checkbox("Apply Patches", c_apply_patches->current_value())) {
+          if (ImGui::Checkbox(
+                  fmt::format("{}##apply_patches", FrontendText("Apply Patches")).c_str(),
+                  c_apply_patches->current_value())) {
             c_apply_patches->SetConfigValue(
                 !c_apply_patches->GetTypedConfigValue());
             config::SaveConfig();
@@ -6839,8 +6936,9 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           auto c_controller_hotkeys = dynamic_cast<cvar::ConfigVar<bool>*>(
               cvar::ConfigVars->find("controller_hotkeys")->second);
-          if (ImGui::Checkbox("Controller Hotkeys",
-                              c_controller_hotkeys->current_value())) {
+          if (ImGui::Checkbox(
+                  fmt::format("{}##controller_hotkeys", FrontendText("Controller Hotkeys")).c_str(),
+                  c_controller_hotkeys->current_value())) {
             c_controller_hotkeys->SetConfigValue(
                 !c_controller_hotkeys->GetTypedConfigValue());
             config::SaveConfig();
@@ -6880,7 +6978,9 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           }
           {
             ScopedAccentComboStyle accent_combo_style;
-            if (ImGui::BeginCombo("Language", user_language_preview)) {
+            if (ImGui::BeginCombo(
+                    fmt::format("{}##guest_language", FrontendText("Game Language")).c_str(),
+                    user_language_preview)) {
               for (const auto& option : kLanguageOptions) {
                 const bool is_selected = user_language == option.value;
                 if (ImGui::Selectable(option.label, is_selected)) {
@@ -6898,6 +6998,37 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
 
           if (ImGui::IsItemFocused()) {
             tooltip = c_user_language->description();
+          }
+
+          // UI translation is independent of user_language (the language
+          // advertised to games) and is persisted in xenia's own config.
+          auto* c_frontend_language = FindConfigVar<std::string>("ui_language");
+          if (c_frontend_language) {
+            static constexpr struct FrontendLanguage {
+              const char* code;
+              const char* name;
+            } language_options[] = {
+                {"en", "English"}, {"pt-BR", "Português (Brasil)"},
+                {"es", "Español"}, {"fr", "Français"},
+                {"de", "Deutsch"}, {"it", "Italiano"},
+            };
+            const std::string active_language = c_frontend_language->GetTypedConfigValue();
+            const char* active_language_name = "English";
+            for (const auto& choice : language_options) {
+              if (active_language == choice.code) active_language_name = choice.name;
+            }
+            ScopedAccentComboStyle accent_combo_style;
+            if (ImGui::BeginCombo(
+                    fmt::format("{}##ui_language", FrontendText("Interface Language")).c_str(),
+                    active_language_name)) {
+              for (const auto& choice : language_options) {
+                if (ImGui::Selectable(choice.name, active_language == choice.code)) {
+                  c_frontend_language->SetConfigValue(choice.code);
+                  config::SaveConfig();
+                }
+              }
+              ImGui::EndCombo();
+            }
           }
 
           ImGui::Spacing();
@@ -7856,6 +7987,51 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
         }
 
         if (settings_selected_section == 7) {
+          // Themes are saved presets for existing renderer-aware UI cvars.
+          // Flat themes also omit the background and overlay textures above.
+          auto* c_theme = FindConfigVar<std::string>("ui_theme_preset");
+          if (c_theme) {
+            struct ThemeOption {
+              const char* id;
+              const char* label;
+              const char* accent;
+              const char* text_effect;
+            };
+            static constexpr ThemeOption kThemes[] = {
+                {"classic", "Xbox 360 Classic", "green", "stroke_fill"},
+                {"xbox_green", "Xbox Green", "green", "glow"},
+                {"blue", "Xbox Blue", "blue", "stroke_fill"},
+                {"purple", "Xbox Purple", "purple", "stroke_fill"},
+                {"amoled", "AMOLED Dark", "green", "none"},
+                {"minimal", "Minimal Dark", "grey", "none"},
+            };
+            std::string chosen = c_theme->GetTypedConfigValue();
+            const char* preview = FrontendText("Xbox 360 Classic");
+            for (const auto& choice : kThemes) {
+              if (chosen == choice.id) preview = FrontendText(choice.label);
+            }
+            ScopedAccentComboStyle accent_combo_style;
+            if (ImGui::BeginCombo(
+                    fmt::format("{}##theme_preset", FrontendText("Theme Preset")).c_str(),
+                    preview)) {
+              for (const auto& choice : kThemes) {
+                if (ImGui::Selectable(FrontendText(choice.label), chosen == choice.id)) {
+                  c_theme->SetConfigValue(choice.id);
+                  if (auto* accent = FindConfigVar<std::string>("ui_border_color"))
+                    accent->SetConfigValue(choice.accent);
+                  if (auto* effect = FindConfigVar<std::string>("ui_text_effect"))
+                    effect->SetConfigValue(choice.text_effect);
+                  background_tex_.reset();
+                  background_fallback_tex_.reset();
+                  config::SaveConfig();
+                  chosen = choice.id;
+                }
+              }
+              ImGui::EndCombo();
+            }
+          }
+
+        if (settings_selected_section == 7) {
           auto bool_toggle = [&](const char* label, const char* true_label,
                                  const char* false_label,
                                  cvar::ConfigVar<bool>* cvar,
@@ -8745,6 +8921,59 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           }
         }
 
+        if (settings_selected_section == 12) {
+          ImGui::TextWrapped("%s", FrontendText("Experimental optimization options"));
+          ImGui::Spacing();
+          ImGui::TextWrapped("%s", FrontendText(
+              "These options may reduce performance or break graphics. Restart the game after changes."));
+          ImGui::Separator();
+
+          struct ExperimentalToggle {
+            const char* key;
+            const char* label;
+          };
+          static constexpr ExperimentalToggle kToggles[] = {
+              {"async_shader_compilation", "Asynchronous shaders"},
+              {"d3d12_bindless", "D3D12 bindless resources"},
+              {"d3d12_submit_on_primary_buffer_end", "Early D3D12 submission"},
+              {"d3d12_clear_memory_page_state", "D3D12 page state tracking"},
+          };
+          for (const auto& option : kToggles) {
+            auto* value = FindConfigVar<bool>(option.key);
+            if (!value) continue;
+            const std::string label =
+                fmt::format("{}##{}", FrontendText(option.label), option.key);
+            if (ImGui::Checkbox(label.c_str(), value->current_value())) {
+              value->SetConfigValue(!value->GetTypedConfigValue());
+              config::SaveConfig();
+            }
+            if (ImGui::IsItemFocused()) tooltip = value->description();
+          }
+          ImGui::Spacing();
+          if (ImGui::Button(FrontendText(
+                  "Favor FPS: disable extra post-processing"))) {
+            if (auto* scaling = FindConfigVar<std::string>(
+                    "postprocess_scaling_and_sharpening"))
+              scaling->SetConfigValue("bilinear");
+            if (auto* aa = FindConfigVar<std::string>(
+                    "postprocess_antialiasing"))
+              aa->SetConfigValue("");
+            config::SaveConfig();
+          }
+          if (ImGui::Button(FrontendText("Restore experimental defaults"))) {
+            // Restore the original upstream defaults, not a guessed
+            // high-performance preset that could destabilize the Xbox.
+            for (const auto& option : kToggles) {
+              if (auto* value = FindConfigVar<bool>(option.key))
+                value->SetConfigValue(true);
+            }
+            config::SaveConfig();
+          }
+          ImGui::Spacing();
+          ImGui::TextDisabled("%s", FrontendText(
+              "No optimization guarantees; test each title separately."));
+        }
+
             ImGui::PopItemWidth();
             ImGui::PopTextWrapPos();
             ImGui::PopStyleVar(2);
@@ -8897,7 +9126,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           // Reuse the same WinRT file picker that other UWP actions use;
           // the selected path is passed to Xenia's normal launch routine.
           if (draw_text_button("##boot_game_file_button",
-                               "Boot Game (ISO / XEX / File)")) {
+                               FrontendText("Boot Game (ISO / XEX / File)"))) {
             imgui_drawer()->SetIgnoreInput(true);
             UWP::SelectFile([this](std::string file_path) {
               imgui_drawer()->SetIgnoreInput(false);
@@ -8929,7 +9158,7 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
                   cvar::ConfigVars->find("storage_root")->second);
 
           if (draw_text_button("##set_config_folders_path_button",
-                               "Set Config Folders Path")) {
+                               FrontendText("Set Config Folders Path"))) {
             imgui_drawer()->SetIgnoreInput(true);
             UWP::SelectFolder([this, ccache_root, ccontent_root,
                                cstorage_root](std::string path) {
