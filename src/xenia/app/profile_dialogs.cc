@@ -120,7 +120,10 @@ void NoProfileDialog::OnDraw(ImGuiIO& io) {
   xe::app::DrawGuidePanelBackground(root_draw_list, guide_bg_tex, overlay_min,
                                     overlay_max);
 
-  const bool child_dialog_open = imgui_drawer()->GetDialogCount() > 2;
+  // Two dialogs (frontend + pause menu) are always registered on UWP.
+  // This prompt itself is a THIRD dialog. Only disable its controls if a
+  // real child window such as CreateProfileUI has been added on top.
+  const bool child_dialog_open = imgui_drawer()->GetDialogCount() > 3;
   bool should_close = false;
   bool should_open_create_profile = false;
   bool should_open_profile_menu = false;
@@ -208,7 +211,7 @@ void NoProfileDialog::OnDraw(ImGuiIO& io) {
 
   if (should_close) {
     emulator_window_->SetHotkeysState(true);
-    delete this;
+    Close();
     return;
   }
 }
@@ -552,7 +555,9 @@ void ProfileConfigDialog::OnDraw(ImGuiIO& io) {
       if (ImGui::MenuItem("Show Played Titles")) {
         XELOGD("ProfileConfigDialog: selected Show Played Titles for {:016X}",
                selected_xuid_);
-        if (imgui_drawer()->GetDialogCount() <= 1) {
+        // The UWP frontend and pause menu are persistent dialogs.
+        // Do not block the Played Titles window merely because of them.
+        if (imgui_drawer()->GetDialogCount() <= 3) {
           const ImVec2 next_window_position(ImVec2(
               overlay_min.x + panel_padding.x + (15.0f * ux),
               overlay_min.y + (72.0f * uy)));
