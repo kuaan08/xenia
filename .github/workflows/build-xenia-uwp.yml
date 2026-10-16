@@ -7,6 +7,7 @@ on:
       - 'xenia-canary-uwp/**'
       - 'src/xenia/app/emulator_window.cc'
       - 'src/xenia/emulator.cc'
+      - 'src/xenia/vfs/devices/**'
       - 'CMakeLists.txt'
       - 'version.h'
       - '.github/workflows/build-xenia-uwp.yml'
