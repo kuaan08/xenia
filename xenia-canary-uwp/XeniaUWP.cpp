@@ -80,7 +80,7 @@ bool AddGameEntry(const std::filesystem::path& path, const std::string& name) {
     return false;
   }
 
-  s_games.push_back({path.string(), name});
+  s_games.push_back({xe::path_to_utf8(path), name});
   return true;
 }
 
@@ -255,112 +255,154 @@ void UWP::UpdateImGuiIO() {
 }
 
 void RecurseFolderForGames(std::string path) {
-  try {
-    const std::string normalized_directory = NormalizeScannedPath(path);
+  namespace fs = std::filesystem;
 
-    if (HasScannedDirectory(normalized_directory)) {
-      return;
+  // FolderPicker::Path is UTF-8. Constructing filesystem::path directly
+  // from a narrow string on Windows uses the active code page and breaks
+  // library folders with non-ASCII characters in their names.
+  const fs::path directory = xe::to_path(path);
+  const std::string normalized_directory = NormalizeScannedPath(directory);
+  if (HasScannedDirectory(normalized_directory)) {
+    return;
+  }
+  s_scanned_paths.push_back(normalized_directory);
+
+  std::error_code ec;
+  fs::directory_iterator iter(
+      directory, fs::directory_options::skip_permission_denied, ec);
+  if (ec) {
+    XELOGW("UWP GameScan: cannot enumerate '{}': {}", path, ec.message());
+    return;
+  }
+
+  fs::path default_xex;
+  std::string default_xex_name;
+  std::vector<std::pair<fs::path, std::string>> other_xex_files;
+  std::vector<std::pair<fs::path, std::string>> content_packages;
+  std::vector<std::pair<fs::path, std::string>> disc_images;
+
+  const fs::directory_iterator end;
+  for (; iter != end; iter.increment(ec)) {
+    if (ec) {
+      XELOGW("UWP GameScan: directory iteration stopped in '{}': {}", path,
+             ec.message());
+      break;
     }
-    s_scanned_paths.push_back(normalized_directory);
 
-    std::filesystem::path loose_xex_path;
-    std::string loose_xex_name;
-    bool has_loose_xex = false;
-
-    // CON/PIRS/ZAR/LIVE-signed files sitting alongside a default.xex are
-    // usually companion resources (e.g. a separately-packaged icon/art
-    // asset, sometimes named things like "<TitleID>.nxeart"), not a second
-    // real game -- STFS/XCONTENT packages can legitimately have those
-    // signatures too. Deferred and only added if this folder turns out to
-    // have no default.xex, so the game list shows one entry per folder
-    // instead of the xex plus a bogus "game" for its own art asset.
-    std::vector<std::pair<std::filesystem::path, std::string>>
-        deferred_content_entries;
-
-    for (auto file : std::filesystem::directory_iterator(path)) {
-      if (file.is_directory() && file.path().string() != path) {
-        RecurseFolderForGames(file.path().string());
+    const fs::directory_entry entry = *iter;
+    try {
+      std::error_code entry_error;
+      if (entry.is_directory(entry_error)) {
+        RecurseFolderForGames(xe::path_to_utf8(entry.path()));
+        continue;
+      }
+      if (entry_error) {
+        XELOGW("UWP GameScan: cannot inspect '{}': {}",
+               xe::path_to_utf8(entry.path()), entry_error.message());
+        continue;
+      }
+      if (!entry.is_regular_file(entry_error) || entry_error) {
         continue;
       }
 
-      if (!file.is_regular_file()) continue;
-
-      switch (xe::GetFileSignature(file.path())) {
+      const fs::path game_path = entry.path();
+      const std::string file_name = xe::path_to_utf8(game_path.filename());
+      const std::string title_name = xe::path_to_utf8(game_path.stem());
+      switch (xe::GetFileSignature(game_path)) {
+        case xe::Emulator::FileSignatureType::XEX0:
+        case xe::Emulator::FileSignatureType::XEXQ:
+        case xe::Emulator::FileSignatureType::XEXH:
+        case xe::Emulator::FileSignatureType::XEX25:
         case xe::Emulator::FileSignatureType::XEX1:
         case xe::Emulator::FileSignatureType::XEX2: {
-          const bool is_default_xex =
-              _stricmp(file.path().filename().string().c_str(),
-                       "default.xex") == 0;
-          if (!is_default_xex) {
-            break;
-          }
-
-          loose_xex_path = file.path();
-          if (file.path().has_parent_path()) {
-            loose_xex_name = file.path().parent_path().filename().string();
+          std::string lowercase_name = file_name;
+          std::transform(lowercase_name.begin(), lowercase_name.end(),
+                         lowercase_name.begin(), [](unsigned char c) {
+                           return static_cast<char>(std::tolower(c));
+                         });
+          if (lowercase_name == "default.xex") {
+            default_xex = game_path;
+            default_xex_name = xe::path_to_utf8(directory.filename());
           } else {
-            loose_xex_name = file.path().stem().string();
+            // Some standalone XEX titles don't use the default.xex name.
+            // Only list those when this directory has no default.xex.
+            other_xex_files.emplace_back(game_path, title_name);
           }
-          has_loose_xex = true;
           break;
         }
         case xe::Emulator::FileSignatureType::CON:
         case xe::Emulator::FileSignatureType::PIRS:
-        case xe::Emulator::FileSignatureType::ZAR: {
-          std::string filename = file.path().stem().string();
-          deferred_content_entries.emplace_back(file.path(), filename);
+        case xe::Emulator::FileSignatureType::ZAR:
+          content_packages.emplace_back(game_path, title_name);
           break;
-        }
-
         case xe::Emulator::FileSignatureType::LIVE: {
-          std::ifstream in(file.path().string(), std::ios::binary);
-
-          in.seekg(0x412);
-
-          // Zero-initialized, and the loop stops one short of the end, so
-          // data[] is always null-terminated regardless of how the loop
-          // below exits -- AddGameEntry() reads this as a C string.
-          char data[32] = {};
-          for (int i = 0; i < 31; i++) {
-            // Title strings in STFS/XCONTENT headers are big-endian UTF-16;
-            // read a full 2-byte code unit rather than 2 bytes into a
-            // 1-byte char (which corrupted the adjacent stack byte).
-            char bytes[2] = {0, 0};
-            in.read(bytes, 2);
-            if (!in) break;
-            char16_t c = (static_cast<char16_t>(
-                              static_cast<unsigned char>(bytes[0]))
-                          << 8) |
-                         static_cast<unsigned char>(bytes[1]);
-            if (c == 0) break;
-
-            if (wctomb_s(nullptr, &data[i], 1, static_cast<wchar_t>(c)) !=
-                0) {
-              // Can't be represented in a single byte (e.g. non-Latin
-              // titles); wctomb_s leaves data[i] untouched on failure, so
-              // without this data[i] would stay uninitialized.
-              data[i] = '?';
+          std::ifstream file(game_path, std::ios::binary);
+          std::string title;
+          if (file && file.seekg(0x412)) {
+            // STFS display name is big-endian UTF-16. ASCII characters
+            // survive directly; use '?' as a safe fallback for other
+            // code points rather than writing past a byte buffer.
+            for (int i = 0; i < 31; ++i) {
+              unsigned char bytes[2] = {};
+              if (!file.read(reinterpret_cast<char*>(bytes), 2)) {
+                break;
+              }
+              const char16_t codepoint =
+                  static_cast<char16_t>((bytes[0] << 8) | bytes[1]);
+              if (!codepoint) {
+                break;
+              }
+              title += (codepoint >= 32 && codepoint <= 126)
+                           ? static_cast<char>(codepoint)
+                           : '?';
             }
           }
-
-          deferred_content_entries.emplace_back(file.path(), std::string(data));
-
-          in.close();
+          content_packages.emplace_back(
+              game_path, title.empty() ? title_name : title);
+          break;
         }
+        case xe::Emulator::FileSignatureType::XISO:
+          disc_images.emplace_back(game_path, title_name);
+          break;
         default:
-          continue;
+          break;
       }
+    } catch (const std::exception& exception) {
+      // A corrupt or unreadable file should not prevent scanning the
+      // rest of the selected folder.
+      XELOGW("UWP GameScan: skipped '{}': {}",
+             xe::path_to_utf8(entry.path()), exception.what());
     }
+  }
 
-    if (has_loose_xex) {
-      AddGameEntry(loose_xex_path, loose_xex_name);
-    } else {
-      for (const auto& entry : deferred_content_entries) {
-        AddGameEntry(entry.first, entry.second);
-      }
+  if (ec) {
+    XELOGW("UWP GameScan: stopped reading '{}': {}", path, ec.message());
+  }
+
+  if (!default_xex.empty()) {
+    AddGameEntry(default_xex, default_xex_name);
+  } else {
+    for (const auto& entry : other_xex_files) {
+      AddGameEntry(entry.first, entry.second);
     }
-  } catch (std::exception) {
-    // This folder can't be opened.
+  }
+
+  for (const auto& entry : content_packages) {
+    // The artwork companion alongside a default.xex is not another game.
+    // Do not discard every CON/LIVE/PIRS package in that folder: legitimate
+    // standalone content would otherwise disappear from the library.
+    std::string ext = xe::path_to_utf8(entry.first.extension());
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) {
+                     return static_cast<char>(std::tolower(c));
+                   });
+    if (!default_xex.empty() && ext == ".nxeart") {
+      continue;
+    }
+    AddGameEntry(entry.first, entry.second);
+  }
+  for (const auto& entry : disc_images) {
+    AddGameEntry(entry.first, entry.second);
   }
 }
 
@@ -369,6 +411,7 @@ void UWP::RefreshPaths() {
   s_games.clear();
   s_scanned_paths.clear();
 
+  XELOGI("UWP GameScan: starting library scan");
   RecurseFolderForGames(UWP::GetLocalCache());
 
   if (!cvars::gamepaths.empty()) {
@@ -385,6 +428,8 @@ void UWP::RefreshPaths() {
   std::sort(s_games.begin(), s_games.end(), [](auto& first, auto& second) {
     return std::get<1>(first) < std::get<1>(second);
   });
+  XELOGI("UWP GameScan: found {} games across {} scanned directories; {} configured paths",
+         s_games.size(), s_scanned_paths.size(), s_paths.size());
 }
 
 std::vector<std::tuple<std::string, std::string>> UWP::GetGames() {
