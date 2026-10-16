@@ -8,6 +8,7 @@
  */
 
 #include "xenia/kernel/xam/ui/create_profile_ui.h"
+#include "xenia/app/frontend_text.h"
 #include "xenia/app/ui_text_effect_helpers.h"
 #include "xenia/emulator.h"
 #if XE_PLATFORM_WINRT
@@ -102,7 +103,8 @@ void CreateProfileUI::OnDraw(ImGuiIO& io) {
     const float uy = io.DisplaySize.y / 576.0f;
     const xe::app::OverlayHeaderLayout header_layout =
         xe::app::DrawOverlayHeader(overlay_draw_list, overlay_min, panel_size,
-                                   panel_padding, ux, uy, "Create Profile");
+                                   panel_padding, ux, uy,
+                                   xe::app::FrontendText("Create Profile"));
 
     const float content_start_y =
         header_layout.position.y + header_layout.font_size + 55.0f;
@@ -122,7 +124,7 @@ void CreateProfileUI::OnDraw(ImGuiIO& io) {
       gamertag_focus_requested_ = false;
     }
 
-    xe::app::DrawConfiguredLabel("Gamertag:");
+    xe::app::DrawConfiguredLabel(xe::app::FrontendText("Gamertag:"));
     ImGui::SetNextItemWidth(field_width);
     xe::app::DrawConfiguredInputText("##Gamertag", gamertag_,
                                      sizeof(gamertag_));
@@ -135,7 +137,7 @@ void CreateProfileUI::OnDraw(ImGuiIO& io) {
                ImGui::GetCursorScreenPos().y + (10.0f * uy)));
     const ImVec2 button_size((field_width - button_gap) * 0.5f, 0.0f);
     ImGui::BeginDisabled(!valid);
-    if (xe::app::DrawTextEffectButton("Create", button_size)) {
+    if (xe::app::DrawTextEffectButton(xe::app::FrontendText("Create"), button_size)) {
       bool autologin = (profile_manager->GetAccountCount() == 0);
       if (profile_manager->CreateProfile(gamertag_string, autologin,
                                          migration_) &&
@@ -148,7 +150,7 @@ void CreateProfileUI::OnDraw(ImGuiIO& io) {
     ImGui::EndDisabled();
     ImGui::SameLine(0.0f, button_gap);
 
-    if (xe::app::DrawTextEffectButton("Cancel", button_size)) {
+    if (xe::app::DrawTextEffectButton(xe::app::FrontendText("Cancel"), button_size)) {
       std::fill(std::begin(gamertag_), std::end(gamertag_), '\0');
       should_close = true;
     }
@@ -182,7 +184,7 @@ void CreateProfileUI::OnDraw(ImGuiIO& io) {
     return;
   }
 
-  ImGui::TextUnformatted("Create Profile");
+  ImGui::TextUnformatted(xe::app::FrontendText("Create Profile"));
   ImGui::Separator();
 
   auto profile_manager = emulator_->kernel_state()->xam_state()->profile_manager();
@@ -194,7 +196,7 @@ void CreateProfileUI::OnDraw(ImGuiIO& io) {
     gamertag_focus_requested_ = false;
   }
 
-  ImGui::TextUnformatted("Gamertag:");
+  ImGui::TextUnformatted(xe::app::FrontendText("Gamertag:"));
   const bool enter_pressed =
       ImGui::InputText("##Gamertag", gamertag_, sizeof(gamertag_),
                        ImGuiInputTextFlags_EnterReturnsTrue);
@@ -202,7 +204,7 @@ void CreateProfileUI::OnDraw(ImGuiIO& io) {
 
   bool dialog_open = true;
   ImGui::BeginDisabled(!valid_gamertag_);
-  if (ImGui::Button("Create") || (enter_pressed && valid_gamertag_)) {
+  if (ImGui::Button(xe::app::FrontendText("Create")) || (enter_pressed && valid_gamertag_)) {
     bool autologin = (profile_manager->GetAccountCount() == 0);
     if (profile_manager->CreateProfile(std::string(gamertag_), autologin,
                                        migration_) &&
@@ -215,7 +217,7 @@ void CreateProfileUI::OnDraw(ImGuiIO& io) {
   ImGui::EndDisabled();
   ImGui::SameLine();
 
-  if (ImGui::Button("Cancel")) {
+  if (ImGui::Button(xe::app::FrontendText("Cancel"))) {
     std::ranges::fill(gamertag_, '\0');
     dialog_open = false;
   }
