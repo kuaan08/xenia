@@ -9442,9 +9442,9 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
               }
             });
           }
-          ImGui::TextDisabled(
-              FrontendText("Choose an Xbox 360 ISO, default.xex or content package.")
-              " Files must be accessible to the app.");
+          ImGui::TextDisabled("%s", FrontendText(
+              "Choose an Xbox 360 ISO, default.xex or content package. "
+              "Files must be accessible to the app."));
 
           auto ccache_root =
               dynamic_cast<cvar::ConfigVar<std::filesystem::path>*>(
@@ -9497,10 +9497,10 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           }
 
           if (ImGui::BeginPopupModal("Warning")) {
-            ImGui::TextWrapped(
-                FrontendText("The selected folder cannot be accessed as requested. ")
+            ImGui::TextWrapped("%s", FrontendText(
+                "The selected folder cannot be accessed as requested. "
                 "Game folders only need read access; cache/config folders "
-                "must allow writing.");
+                "must allow writing."));
             ImGui::Separator();
             if (draw_text_button("##path_warning_ok_button", "OK")) {
               ImGui::CloseCurrentPopup();
@@ -9609,9 +9609,9 @@ void EmulatorWindow::WinRTFrontendDialog::OnDraw(ImGuiIO& io) {
           }
 
           ImGui::Spacing();
-          ImGui::TextWrapped(
-              FrontendText("This UWP Xbox Port was originally made by SirMangler and the ")
-              "hardwork of all the Xenia Project contributers over the years\n");
+          ImGui::TextWrapped("%s", FrontendText(
+              "This UWP Xbox Port was originally made by SirMangler and the "
+              "hardwork of all the Xenia Project contributers over the years\n"));
 
           ImGui::EndChild();
           ImGui::Unindent(about_content_offset_x);
